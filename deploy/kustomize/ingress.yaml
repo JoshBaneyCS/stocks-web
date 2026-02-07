@@ -1,0 +1,56 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: stocks-web-ingress
+  namespace: stocks-web
+  labels:
+    app.kubernetes.io/name: ingress
+    app.kubernetes.io/component: routing
+  annotations:
+    # cert-manager TLS provisioning
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+
+    # Nginx ingress controller settings
+    nginx.ingress.kubernetes.io/proxy-body-size: "1m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+
+    # SSE support — disable buffering for /api/stream paths
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+
+    # Security headers
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_set_headers "X-Frame-Options: SAMEORIGIN";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      more_set_headers "Referrer-Policy: strict-origin-when-cross-origin";
+
+    # Rate limiting on auth endpoints
+    nginx.ingress.kubernetes.io/limit-rps: "10"
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "5"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - stocks.baneynet.net
+      secretName: stocks-web-tls
+  rules:
+    - host: stocks.baneynet.net
+      http:
+        paths:
+          # API routes → backend service
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: stocks-web-backend
+                port:
+                  name: http
+
+          # Everything else → frontend (Nginx serves static + SPA routing)
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: stocks-web-frontend
+                port:
+                  name: http
