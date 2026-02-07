@@ -1,0 +1,46 @@
+---
+interface Props {
+  title: string;
+  description?: string;
+  requireAuth?: boolean;
+}
+
+const {
+  title,
+  description = 'Bloomberg-style stock data terminal',
+  requireAuth = false,
+} = Astro.props;
+---
+
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content={description} />
+    <meta name="color-scheme" content="dark" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>{title} | StocksTerminal</title>
+    <style>
+      /* Prevent FOUC */
+      html {
+        background-color: #0a0e17;
+        color: #e2e8f0;
+      }
+    </style>
+  </head>
+  <body class="min-h-screen bg-terminal-bg text-terminal-text">
+    <slot />
+
+    {requireAuth && (
+      <script is:inline>
+        (function () {
+          var token = localStorage.getItem('access_token');
+          if (!token) {
+            window.location.replace('/login');
+          }
+        })();
+      </script>
+    )}
+  </body>
+</html>
