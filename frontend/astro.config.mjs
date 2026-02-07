@@ -20,5 +20,10 @@ export default defineConfig({
     optimizeDeps: {
       exclude: ['stocks-wasm'],
     },
+    build: {
+      rollupOptions: {
+        external: ['/wasm/stocks_wasm.js'],
+      },
+    },
   },
 });

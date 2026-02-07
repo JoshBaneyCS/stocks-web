@@ -12,9 +12,10 @@ import Navbar from '@/components/Navbar';
 import StockDetail from '@/components/StockDetail';
 
 export function getStaticPaths() {
-  // Return a wildcard — Astro generates a single catch-all page
+  // Return a placeholder — Astro generates a single catch-all page
   // Nginx try_files ensures all /app/stocks/XXXX routes serve this page
-  return [{ params: { symbol: undefined } }];
+  // The actual symbol is extracted client-side from window.location.pathname
+  return [{ params: { symbol: 'index' } }];
 }
 ---
 

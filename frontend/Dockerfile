@@ -1,20 +1,40 @@
-# ── Stage 1: Build ───────────────────────────────────────────────────
+# ── Stage 0: Build WASM Module ───────────────────────────────────────
+FROM rust:1.83 AS wasm-builder
+
+# Install wasm-pack
+RUN curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+# Set working directory for WASM build
+WORKDIR /wasm
+
+# Copy WASM source from project root context
+COPY wasm/Cargo.toml wasm/Cargo.lock* ./
+COPY wasm/src ./src
+
+# Build WASM module for web target
+# Note: wasm-pack outputs to ./pkg by default
+RUN wasm-pack build --target web
+
+# ── Stage 1: Build Frontend ───────────────────────────────────────────
 FROM node:20-alpine AS builder
 
 WORKDIR /app
 
 # Install dependencies first (cache layer)
-COPY package.json ./
+COPY frontend/package.json ./
 RUN npm install --frozen-lockfile 2>/dev/null || npm install
 
 # Copy source
-COPY . .
+COPY frontend/ .
+
+# Copy WASM outputs from wasm-builder stage to public directory
+COPY --from=wasm-builder /wasm/pkg ./public/wasm
 
 # Build-time env vars (overridable)
 ARG PUBLIC_API_URL=/api
 ENV PUBLIC_API_URL=${PUBLIC_API_URL}
 
-# Build static site
+# Build static site (can now resolve /wasm/stocks_wasm.js)
 RUN npm run build
 
 # ── Stage 2: Serve ───────────────────────────────────────────────────
@@ -26,90 +46,8 @@ RUN rm /etc/nginx/conf.d/default.conf
 # Custom nginx config with SPA routing
 COPY --from=builder /app/dist /usr/share/nginx/html
 
-# Nginx config
-RUN cat > /etc/nginx/conf.d/default.conf << 'NGINX'
-server {
-    listen 80;
-    server_name _;
-
-    root /usr/share/nginx/html;
-    index index.html;
-
-    # Gzip
-    gzip on;
-    gzip_types text/plain text/css application/json application/javascript text/xml application/xml text/javascript image/svg+xml;
-    gzip_min_length 256;
-    gzip_vary on;
-
-    # Security headers
-    add_header X-Frame-Options "SAMEORIGIN" always;
-    add_header X-Content-Type-Options "nosniff" always;
-    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-
-    # Cache static assets aggressively
-    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
-        expires 1y;
-        add_header Cache-Control "public, immutable";
-        try_files $uri =404;
-    }
-
-    # WASM files
-    location ~* \.wasm$ {
-        types { application/wasm wasm; }
-        expires 1y;
-        add_header Cache-Control "public, immutable";
-        try_files $uri =404;
-    }
-
-    # API proxy (for non-k8s setups or docker-compose)
-    location /api/ {
-        proxy_pass http://backend:8080/api/;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-
-        # SSE support
-        proxy_set_header Connection '';
-        proxy_buffering off;
-        proxy_cache off;
-        proxy_read_timeout 3600s;
-    }
-
-    # SPA catch-all: serve index.html for app routes
-    # Stock detail pages: /app/stocks/AAPL → serve the catch-all page
-    location /app/stocks/ {
-        try_files $uri $uri/ /app/stocks/index.html;
-    }
-
-    # Other app routes
-    location /app/ {
-        try_files $uri $uri/ /app/index.html;
-    }
-
-    # Auth pages
-    location /login {
-        try_files $uri $uri/ /login/index.html;
-    }
-
-    location /signup {
-        try_files $uri $uri/ /signup/index.html;
-    }
-
-    # Root redirect to app
-    location = / {
-        return 302 /app;
-    }
-
-    # Health check for k8s
-    location = /nginx-health {
-        access_log off;
-        return 200 "ok";
-        add_header Content-Type text/plain;
-    }
-}
-NGINX
+# Copy nginx configuration
+COPY frontend/nginx.conf /etc/nginx/conf.d/default.conf
 
 EXPOSE 80
 
