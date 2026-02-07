@@ -1,0 +1,77 @@
+version: "3.9"
+
+services:
+  # ── PostgreSQL ─────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: stock-data
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d stock-data"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── Go Backend API ─────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: "postgres://postgres:postgres@postgres:5432/stock-data?sslmode=disable"
+      JWT_SECRET: "dev-jwt-secret-change-in-production"
+      REFRESH_SECRET: "dev-refresh-secret-change-in-production"
+      ADMIN_SECRET: "dev-admin-secret"
+      CORS_ORIGIN: "http://localhost:4321"
+      PORT: "8080"
+      LOG_LEVEL: "debug"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # ── Astro Frontend (dev mode) ──────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  # ── Astro Frontend (dev mode with hot reload) ──────────────────────
+  # Uncomment this and comment out the 'frontend' service above
+  # for live development with hot module replacement:
+  #
+  # frontend-dev:
+  #   image: node:20-alpine
+  #   working_dir: /app
+  #   command: sh -c "npm install && npm run dev"
+  #   ports:
+  #     - "4321:4321"
+  #   volumes:
+  #     - ./frontend:/app
+  #     - frontend_node_modules:/app/node_modules
+  #   environment:
+  #     PUBLIC_API_URL: "http://localhost:8080/api"
+  #   depends_on:
+  #     backend:
+  #       condition: service_healthy
+
+volumes:
+  pgdata:
+  # frontend_node_modules:
