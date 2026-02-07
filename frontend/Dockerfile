@@ -46,6 +46,9 @@ RUN rm /etc/nginx/conf.d/default.conf
 # Custom nginx config with SPA routing
 COPY --from=builder /app/dist /usr/share/nginx/html
 
+# Fix: Copy root index.html to /app/index.html for SPA routing
+RUN cp /usr/share/nginx/html/index.html /usr/share/nginx/html/app/index.html
+
 # Copy nginx configuration
 COPY frontend/nginx.conf /etc/nginx/conf.d/default.conf
 
