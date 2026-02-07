@@ -1,0 +1,47 @@
+---
+/**
+ * Catch-all route for /app/stocks/{SYMBOL}
+ *
+ * Since this is a static build and we can't enumerate all symbols at build time,
+ * we use a catch-all route. Nginx is configured with try_files to serve this
+ * page for any /app/stocks/* path. The React component extracts the symbol
+ * from window.location.pathname.
+ */
+import Layout from '@/layouts/Layout.astro';
+import Navbar from '@/components/Navbar';
+import StockDetail from '@/components/StockDetail';
+
+export function getStaticPaths() {
+  // Return a wildcard — Astro generates a single catch-all page
+  // Nginx try_files ensures all /app/stocks/XXXX routes serve this page
+  return [{ params: { symbol: undefined } }];
+}
+---
+
+<Layout title="Stock Detail" requireAuth>
+  <Navbar client:load />
+  <div id="stock-detail-mount">
+    <StockDetail client:load symbol="" />
+  </div>
+
+  <script is:inline>
+    // Extract symbol from URL and re-mount the component with correct props
+    (function () {
+      var path = window.location.pathname;
+      var parts = path.split('/').filter(Boolean);
+      // URL: /app/stocks/AAPL → parts = ['app', 'stocks', 'AAPL']
+      var symbol = parts.length >= 3 ? parts[2].toUpperCase() : '';
+
+      if (!symbol) {
+        window.location.replace('/app/stocks');
+        return;
+      }
+
+      // Store symbol for React component to read
+      window.__STOCK_SYMBOL__ = symbol;
+
+      // Update page title
+      document.title = symbol + ' | StocksTerminal';
+    })();
+  </script>
+</Layout>

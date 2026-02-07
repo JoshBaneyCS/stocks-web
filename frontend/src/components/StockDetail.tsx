@@ -41,7 +41,16 @@ function MetricCard({ label, value, sub }: { label: string; value: string; sub?:
   );
 }
 
-export default function StockDetail({ symbol }: Props) {
+declare global {
+  interface Window {
+    __STOCK_SYMBOL__?: string;
+  }
+}
+
+export default function StockDetail({ symbol: propSymbol }: Props) {
+  // In static Astro build, symbol comes from window global set by inline script
+  const symbol = propSymbol || (typeof window !== 'undefined' ? window.__STOCK_SYMBOL__ : '') || '';
+
   const [company, setCompany] = useState<Company | null>(null);
   const [news, setNews] = useState<NewsArticle[]>([]);
   const [market, setMarket] = useState<MarketStatus | null>(null);
@@ -101,6 +110,18 @@ export default function StockDetail({ symbol }: Props) {
   }, [symbol, newsFrom, newsTo]);
 
   const marketOpen = market?.is_open ?? false;
+
+  if (!symbol) {
+    return (
+      <div className="max-w-screen-xl mx-auto px-4 py-8">
+        <div className="panel">
+          <div className="panel-body text-center py-12">
+            <p className="text-sm text-terminal-muted mb-4">Loading stock...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // Compute price change from company data
   const priceChange = company?.prev_close && company?.todays_high

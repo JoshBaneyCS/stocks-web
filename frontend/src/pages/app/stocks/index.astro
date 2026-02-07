@@ -1,0 +1,18 @@
+---
+import Layout from '@/layouts/Layout.astro';
+import Navbar from '@/components/Navbar';
+import StockList from '@/components/StockList';
+---
+
+<Layout title="Stocks" requireAuth>
+  <Navbar client:load />
+  <div class="max-w-screen-xl mx-auto px-4 py-6">
+    <div class="mb-4">
+      <h1 class="text-lg font-semibold text-terminal-text">All Stocks</h1>
+      <p class="text-xs text-terminal-muted mt-0.5">
+        Browse, search, and manage your favorite stocks
+      </p>
+    </div>
+    <StockList client:load />
+  </div>
+</Layout>

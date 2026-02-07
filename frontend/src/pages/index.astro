@@ -1,0 +1,10 @@
+---
+import Layout from '@/layouts/Layout.astro';
+import Navbar from '@/components/Navbar';
+import Dashboard from '@/components/Dashboard';
+---
+
+<Layout title="Dashboard" requireAuth>
+  <Navbar client:load />
+  <Dashboard client:load />
+</Layout>
