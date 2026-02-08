@@ -96,7 +96,8 @@ func (h *StocksHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	// Fetch page
 	dataQuery := fmt.Sprintf(
-		`SELECT id, symbol, name, exchange, sector, industry, market_cap
+		`SELECT id, symbol, name, exchange, sector, industry, market_cap,
+		        volume, prev_close, week52_high, week52_low
 		 FROM companies
 		 %s
 		 ORDER BY symbol ASC
@@ -116,7 +117,8 @@ func (h *StocksHandler) List(w http.ResponseWriter, r *http.Request) {
 	stocks := make([]models.CompanyListItem, 0)
 	for rows.Next() {
 		var s models.CompanyListItem
-		if err := rows.Scan(&s.ID, &s.Symbol, &s.Name, &s.Exchange, &s.Sector, &s.Industry, &s.MarketCap); err != nil {
+		if err := rows.Scan(&s.ID, &s.Symbol, &s.Name, &s.Exchange, &s.Sector, &s.Industry, &s.MarketCap,
+			&s.Volume, &s.PrevClose, &s.Week52Hi, &s.Week52Lo); err != nil {
 			slog.Error("stocks.list: scan row", "error", err)
 			continue
 		}
@@ -124,7 +126,7 @@ func (h *StocksHandler) List(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, models.StockListResponse{
-		Stocks:     stocks,
+		Data:       stocks,
 		Total:      total,
 		Page:       page,
 		PageSize:   pageSize,

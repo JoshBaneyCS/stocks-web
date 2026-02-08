@@ -32,6 +32,10 @@ type CompanyListItem struct {
 	Sector    *string  `json:"sector"`
 	Industry  *string  `json:"industry"`
 	MarketCap *float64 `json:"market_cap"`
+	Volume    *int64   `json:"volume"`
+	PrevClose *float64 `json:"prev_close"`
+	Week52Hi  *float64 `json:"week52_high"`
+	Week52Lo  *float64 `json:"week52_low"`
 }
 
 // PriceBar maps to the existing `price_bars` table.
@@ -168,7 +172,7 @@ type FavoritesUpdateRequest struct {
 
 // StockListResponse wraps paginated stock results.
 type StockListResponse struct {
-	Stocks     []CompanyListItem `json:"stocks"`
+	Data       []CompanyListItem `json:"data"`
 	Total      int               `json:"total"`
 	Page       int               `json:"page"`
 	PageSize   int               `json:"page_size"`
