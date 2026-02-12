@@ -14,7 +14,8 @@ let initPromise: Promise<WasmModule | null> | null = null;
 
 async function loadWasm(): Promise<WasmModule | null> {
   try {
-    const wasm = await import('/wasm/stocks_wasm.js' as string);
+    const wasmPath = '/wasm/stocks_wasm.js';
+    const wasm = await import(/* @vite-ignore */ wasmPath);
     await wasm.default();
     return wasm as unknown as WasmModule;
   } catch (err) {
