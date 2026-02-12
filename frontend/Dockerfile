@@ -1,5 +1,5 @@
 # Stage 0: Build WASM
-FROM rust:1.83-slim AS wasm-builder
+FROM rust:1.85-slim AS wasm-builder
 RUN cargo install wasm-pack
 WORKDIR /wasm
 COPY wasm/ .
