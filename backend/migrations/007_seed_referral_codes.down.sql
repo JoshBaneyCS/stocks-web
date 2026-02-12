@@ -1,1 +1,0 @@
-DELETE FROM referral_codes WHERE code IN ('EARLY-ACCESS-2026', 'FOUNDER-INVITE');

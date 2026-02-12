@@ -1,6 +1,13 @@
 node_modules/
 dist/
 build/
+
+# Rust/WASM build artifacts
+wasm/target/
+wasm/pkg/
+
+# Go binary
+backend/server
 .env
 .DS_Store
 *.log

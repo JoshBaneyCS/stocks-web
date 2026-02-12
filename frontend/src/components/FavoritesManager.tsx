@@ -59,7 +59,6 @@ export default function FavoritesManager() {
     try {
       await updateFavorites([...pendingIds]);
       const favs = await getFavorites();
-      setFavorites(favs);
       const ids = new Set(favs.map((f) => f.id));
       setFavoriteIds(ids);
       setPendingIds(new Set(ids));
