@@ -1,0 +1,14 @@
+/Users/joshbaney/Documents/Stocks/stocks-web/wasm/target/debug/deps/serde-defe6d429284730f.d: /Users/joshbaney/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/joshbaney/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/joshbaney/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/joshbaney/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/joshbaney/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Users/joshbaney/Documents/Stocks/stocks-web/wasm/target/debug/build/serde-7cb620e44cc644da/out/private.rs
+
+/Users/joshbaney/Documents/Stocks/stocks-web/wasm/target/debug/deps/libserde-defe6d429284730f.rlib: /Users/joshbaney/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/joshbaney/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/joshbaney/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/joshbaney/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/joshbaney/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Users/joshbaney/Documents/Stocks/stocks-web/wasm/target/debug/build/serde-7cb620e44cc644da/out/private.rs
+
+/Users/joshbaney/Documents/Stocks/stocks-web/wasm/target/debug/deps/libserde-defe6d429284730f.rmeta: /Users/joshbaney/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/joshbaney/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/joshbaney/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/joshbaney/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/joshbaney/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Users/joshbaney/Documents/Stocks/stocks-web/wasm/target/debug/build/serde-7cb620e44cc644da/out/private.rs
+
+/Users/joshbaney/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs:
+/Users/joshbaney/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs:
+/Users/joshbaney/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs:
+/Users/joshbaney/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs:
+/Users/joshbaney/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs:
+/Users/joshbaney/Documents/Stocks/stocks-web/wasm/target/debug/build/serde-7cb620e44cc644da/out/private.rs:
+
+# env-dep:OUT_DIR=/Users/joshbaney/Documents/Stocks/stocks-web/wasm/target/debug/build/serde-7cb620e44cc644da/out

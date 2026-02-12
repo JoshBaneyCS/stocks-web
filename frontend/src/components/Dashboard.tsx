@@ -1,168 +1,139 @@
-import { useState, useEffect } from 'react';
-import { getMarketStatus, getFavorites, getStockNews } from '@/lib/api';
-import type { MarketStatus as MarketStatusType, Favorite, NewsArticle } from '@/lib/types';
-import MarketStatus from './MarketStatus';
+import { useEffect, useState } from 'react';
+import { getDashboard } from '../lib/api';
+import type { DashboardResponse } from '../lib/types';
+import { useMarketStore } from '../lib/store';
 import FavoritesList from './FavoritesList';
-import NewsHeadlines from './NewsHeadlines';
 
 export default function Dashboard() {
-  const [market, setMarket] = useState<MarketStatusType | null>(null);
-  const [news, setNews] = useState<NewsArticle[]>([]);
-  const [loadingNews, setLoadingNews] = useState(true);
+  const [data, setData] = useState<DashboardResponse | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const { isOpen, status } = useMarketStore();
 
   useEffect(() => {
-    let mounted = true;
-
-    // Fetch market status
-    getMarketStatus()
-      .then((data) => {
-        if (mounted) setMarket(data);
-      })
-      .catch(() => {});
-
-    // Fetch favorites then get news for those symbols
-    async function loadNews() {
-      try {
-        const favs = await getFavorites();
-        if (!mounted || favs.length === 0) {
-          setLoadingNews(false);
-          return;
-        }
-
-        // Fetch news for each favorite (first 5 articles each)
-        const newsPromises = favs.slice(0, 10).map((f: Favorite) =>
-          getStockNews(f.symbol, undefined, undefined, 5).catch(() => [] as NewsArticle[]),
-        );
-
-        const results = await Promise.all(newsPromises);
-        if (!mounted) return;
-
-        // Flatten, deduplicate by id, sort by published_at desc
-        const allNews = results
-          .flat()
-          .reduce((acc: NewsArticle[], article) => {
-            if (!acc.find((a) => a.id === article.id)) {
-              acc.push(article);
-            }
-            return acc;
-          }, [])
-          .sort(
-            (a, b) =>
-              new Date(b.published_at).getTime() - new Date(a.published_at).getTime(),
-          )
-          .slice(0, 20);
-
-        setNews(allNews);
-      } catch {
-        // Silently handle — news is non-critical
-      } finally {
-        if (mounted) setLoadingNews(false);
-      }
-    }
-
-    loadNews();
-
-    // Poll market status
-    const interval = setInterval(() => {
-      getMarketStatus()
-        .then((data) => {
-          if (mounted) setMarket(data);
-        })
-        .catch(() => {});
-    }, 30_000);
-
-    return () => {
-      mounted = false;
-      clearInterval(interval);
-    };
+    loadDashboard();
   }, []);
 
-  const marketOpen = market?.is_open ?? false;
+  const loadDashboard = async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const response = await getDashboard();
+      setData(response);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load dashboard');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-6 h-6 border-2 border-terminal-accent border-t-transparent rounded-full animate-spin" />
+          <span className="text-terminal-muted text-sm">Loading dashboard...</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="terminal-panel p-6 text-center">
+        <p className="text-terminal-red text-sm mb-3">{error}</p>
+        <button onClick={loadDashboard} className="btn-primary text-sm">
+          Retry
+        </button>
+      </div>
+    );
+  }
 
   return (
-    <div className="max-w-screen-xl mx-auto px-4 py-6">
-      {/* Top row: Market Status */}
-      <div className="mb-6">
-        <MarketStatus />
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <h1 className="text-xl font-bold">Dashboard</h1>
+        <span className="text-xs text-terminal-muted">
+          Last updated: {new Date().toLocaleTimeString()}
+        </span>
       </div>
 
-      {/* Main grid: Favorites + News */}
+      {/* Grid layout */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Favorites — takes 2 columns on large screens */}
-        <div className="lg:col-span-2">
-          <FavoritesList marketOpen={marketOpen} />
+        {/* Left: Favorites */}
+        <div className="lg:col-span-2 space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-medium text-terminal-muted uppercase tracking-wider">
+              Watchlist
+            </h2>
+            <a
+              href="/app/instruments"
+              className="text-xs text-terminal-accent hover:underline"
+            >
+              + Add instruments
+            </a>
+          </div>
+          <FavoritesList favorites={data?.favorites ?? []} />
         </div>
 
-        {/* News sidebar */}
-        <div className="lg:col-span-1">
-          <div className="panel">
-            <div className="panel-header">
-              <span className="text-xs font-medium text-terminal-dim uppercase tracking-wider">
-                News for Favorites
+        {/* Right: Sidebar */}
+        <div className="space-y-4">
+          {/* Market Status Card */}
+          <div className="terminal-panel p-4">
+            <h3 className="text-xs font-medium text-terminal-muted uppercase tracking-wider mb-3">
+              Market Status
+            </h3>
+            <div className="flex items-center gap-3 mb-3">
+              <span
+                className={`w-3 h-3 rounded-full ${
+                  isOpen ? 'bg-terminal-green live-dot' : 'bg-terminal-muted'
+                }`}
+              />
+              <span className={`text-lg font-bold ${isOpen ? 'text-terminal-green' : 'text-terminal-muted'}`}>
+                {isOpen ? 'OPEN' : 'CLOSED'}
               </span>
-              {news.length > 0 && (
-                <span className="text-2xs text-terminal-muted font-mono">
-                  {news.length} articles
-                </span>
-              )}
             </div>
-            <div className="panel-body">
-              {loadingNews ? (
-                <div className="space-y-3">
-                  {Array.from({ length: 5 }).map((_, i) => (
-                    <div key={i} className="animate-pulse space-y-2">
-                      <div className="h-3.5 bg-terminal-border rounded w-full" />
-                      <div className="h-3 bg-terminal-border rounded w-2/3" />
-                    </div>
-                  ))}
-                </div>
-              ) : news.length === 0 ? (
-                <div className="text-center py-6">
-                  <p className="text-sm text-terminal-muted mb-1">No recent news</p>
-                  <p className="text-2xs text-terminal-muted">
-                    Add favorites to see their latest headlines here
-                  </p>
-                </div>
-              ) : (
-                <NewsHeadlines
-                  articles={news}
-                  maxItems={10}
-                  showSymbols
-                  compact
-                />
-              )}
-            </div>
+            {status?.message && (
+              <p className="text-xs text-terminal-muted">{status.message}</p>
+            )}
           </div>
 
-          {/* Quick links */}
-          <div className="panel mt-4">
-            <div className="panel-header">
-              <span className="text-xs font-medium text-terminal-dim uppercase tracking-wider">
-                Quick Links
-              </span>
-            </div>
-            <div className="panel-body space-y-1">
+          {/* Quick Links Card */}
+          <div className="terminal-panel p-4">
+            <h3 className="text-xs font-medium text-terminal-muted uppercase tracking-wider mb-3">
+              Quick Links
+            </h3>
+            <div className="space-y-2">
               <a
-                href="/app/stocks"
-                className="flex items-center gap-2 px-2 py-2 rounded text-sm text-terminal-dim hover:text-terminal-text hover:bg-terminal-border/20 transition-colors"
+                href="/app/instruments"
+                className="flex items-center gap-2 text-sm text-terminal-text hover:text-terminal-accent transition-colors py-1"
               >
-                <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
-                  <path d="M3 12v3c0 1.657 3.134 3 7 3s7-1.343 7-3v-3c0 1.657-3.134 3-7 3s-7-1.343-7-3z" />
-                  <path d="M3 7v3c0 1.657 3.134 3 7 3s7-1.343 7-3V7c0 1.657-3.134 3-7 3S3 8.657 3 7z" />
-                  <path d="M17 5c0 1.657-3.134 3-7 3S3 6.657 3 5s3.134-3 7-3 7 1.343 7 3z" />
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4">
+                  <circle cx="11" cy="11" r="8" />
+                  <path d="m21 21-4.3-4.3" />
                 </svg>
-                Browse All Stocks
+                Browse Instruments
               </a>
               <a
                 href="/app/settings"
-                className="flex items-center gap-2 px-2 py-2 rounded text-sm text-terminal-dim hover:text-terminal-text hover:bg-terminal-border/20 transition-colors"
+                className="flex items-center gap-2 text-sm text-terminal-text hover:text-terminal-accent transition-colors py-1"
               >
-                <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
-                  <path fillRule="evenodd" d="M3.172 5.172a4 4 0 015.656 0L10 6.343l1.172-1.171a4 4 0 115.656 5.656L10 17.657l-6.828-6.829a4 4 0 010-5.656z" clipRule="evenodd" />
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4">
+                  <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+                  <circle cx="12" cy="12" r="3" />
                 </svg>
-                Manage Favorites
+                Manage Settings
               </a>
             </div>
+          </div>
+
+          {/* News stub */}
+          <div className="terminal-panel p-4">
+            <h3 className="text-xs font-medium text-terminal-muted uppercase tracking-wider mb-3">
+              Headlines
+            </h3>
+            <p className="text-xs text-terminal-muted italic">News coming soon</p>
           </div>
         </div>
       </div>

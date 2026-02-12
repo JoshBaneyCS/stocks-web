@@ -19,7 +19,7 @@ version = "0.3"
 features = ["console"]
 
 [profile.release]
-opt-level = "s"       # optimize for small binary size
-lto = true            # link-time optimization
-strip = true          # strip debug symbols
-codegen-units = 1     # single codegen unit for max optimization
+opt-level = "s"
+lto = true
+strip = true
+codegen-units = 1

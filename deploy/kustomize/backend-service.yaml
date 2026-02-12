@@ -4,15 +4,13 @@ metadata:
   name: stocks-web-backend
   namespace: stocks-web
   labels:
-    app.kubernetes.io/name: backend
-    app.kubernetes.io/component: api
+    app: stocks-web-backend
+    app.kubernetes.io/component: backend
 spec:
   type: ClusterIP
   selector:
-    app.kubernetes.io/name: backend
-    app.kubernetes.io/component: api
+    app: stocks-web-backend
   ports:
-    - name: http
-      port: 80
-      targetPort: http
+    - port: 8080
+      targetPort: 8080
       protocol: TCP

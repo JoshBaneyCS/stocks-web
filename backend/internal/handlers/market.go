@@ -8,18 +8,16 @@ import (
 
 // MarketHandler handles market status endpoints.
 type MarketHandler struct {
-	checker *market.Checker
+	Checker *market.Checker
 }
 
-// NewMarketHandler creates a new market handler.
+// NewMarketHandler creates a new MarketHandler.
 func NewMarketHandler(checker *market.Checker) *MarketHandler {
-	return &MarketHandler{checker: checker}
+	return &MarketHandler{Checker: checker}
 }
 
-// Status handles GET /api/market/status
-// Returns whether the market is currently open, current ET time,
-// and either next_open (if closed) or next_close (if open).
+// Status returns the current NYSE market status.
 func (h *MarketHandler) Status(w http.ResponseWriter, r *http.Request) {
-	status := h.checker.Check()
+	status := h.Checker.GetMarketStatus()
 	writeJSON(w, http.StatusOK, status)
 }

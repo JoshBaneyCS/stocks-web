@@ -1,23 +1,46 @@
-// ── Company ─────────────────────────────────────────────────────────
-
-export interface Company {
-  id: number;
-  symbol: string;
-  name: string;
-  exchange: string;
-  sector: string;
-  industry: string;
-  market_cap: number;
-  week52_high: number;
-  week52_low: number;
-  prev_close: number;
-  todays_high: number;
-  todays_low: number;
-  volume: number;
+export interface User {
+  id: string;
+  email: string;
+  first_name: string;
+  last_name: string;
+  created_at: string;
   updated_at: string;
 }
 
-// ── Price Bars ──────────────────────────────────────────────────────
+export interface Instrument {
+  id: number;
+  symbol: string;
+  name: string | null;
+  exchange: string | null;
+  currency: string | null;
+  country: string | null;
+  asset_class: string;
+  is_active: boolean;
+}
+
+export interface InstrumentListItem extends Instrument {
+  last_price: number | null;
+  market_cap: number | null;
+  sector: string | null;
+  industry: string | null;
+  is_favorite: boolean;
+}
+
+export interface InstrumentDetail extends Instrument {
+  last_price: number | null;
+  market_cap: number | null;
+  profile: CompanyProfile | null;
+  latest_quote: Quote | null;
+}
+
+export interface CompanyProfile {
+  market_cap: number | null;
+  sector: string | null;
+  industry: string | null;
+  exchange: string | null;
+  country: string | null;
+  currency: string | null;
+}
 
 export interface PriceBar {
   ts: string;
@@ -26,136 +49,69 @@ export interface PriceBar {
   low: number;
   close: number;
   volume: number;
+  adj_close?: number;
 }
 
-/** Lightweight point for sparklines and WASM downsampling */
-export interface PricePoint {
-  time: number; // unix seconds
-  value: number;
+export interface Quote {
+  ts: string;
+  last_price: number | null;
+  bid: number | null;
+  ask: number | null;
+  volume: number | null;
+  source: string | null;
 }
 
-/** OHLC point for candlestick charts */
-export interface OHLCPoint {
-  time: number; // unix seconds
-  open: number;
-  high: number;
-  low: number;
-  close: number;
+export interface FundamentalsRow {
+  period_end_date: string;
+  calendar_year: number | null;
+  period: string | null;
+  revenue: number | null;
+  gross_profit: number | null;
+  operating_income: number | null;
+  net_income: number | null;
+  eps: number | null;
 }
 
-// ── News ────────────────────────────────────────────────────────────
-
-export interface NewsArticle {
-  id: string;
-  provider: string;
-  source_name: string;
-  title: string;
-  summary: string;
-  url: string;
-  published_at: string;
-  symbols: string[];
+export interface MarketStatus {
+  is_open: boolean;
+  next_open: string | null;
+  next_close: string | null;
+  message: string;
 }
 
-// ── Auth ────────────────────────────────────────────────────────────
-
-export interface User {
-  id: number;
-  email: string;
-  first_name: string;
-  last_name: string;
-  created_at: string;
-}
-
-export interface LoginRequest {
-  email: string;
-  password: string;
-}
-
-export interface SignupRequest {
-  email: string;
-  password: string;
-  first_name: string;
-  last_name: string;
-  referral_code: string;
+export interface PaginatedResponse<T> {
+  data: T[];
+  page: number;
+  page_size: number;
+  total_count: number;
+  total_pages: number;
 }
 
 export interface AuthResponse {
   access_token: string;
-  refresh_token: string;
   user: User;
 }
 
-// ── Favorites ───────────────────────────────────────────────────────
+export interface DashboardResponse {
+  favorites: InstrumentListItem[];
+  market_status: MarketStatus;
+}
 
-export interface Favorite {
-  company_id: number;
+export interface PriceEvent {
+  symbol: string;
+  last_price: number;
+  bid: number | null;
+  ask: number | null;
+  volume: number | null;
+  ts: string;
+}
+
+export interface TimeSeriesPoint {
+  ts: number;
+  value: number;
+}
+
+export interface SymbolEntry {
   symbol: string;
   name: string;
-  added_at: string;
-}
-
-export interface FavoritesUpdateRequest {
-  company_ids: number[];
-}
-
-// ── Market Status ───────────────────────────────────────────────────
-
-export interface MarketStatus {
-  is_open: boolean;
-  current_time: string;
-  next_open: string;
-  next_close: string;
-  message: string;
-}
-
-// ── API Responses ───────────────────────────────────────────────────
-
-export interface PaginatedResponse<T> {
-  data: T[];
-  total: number;
-  page: number;
-  page_size: number;
-  total_pages: number;
-}
-
-export interface ApiError {
-  error: string;
-  message?: string;
-}
-
-// ── SSE Events ──────────────────────────────────────────────────────
-
-export interface SSEPriceEvent {
-  type: 'price';
-  symbol: string;
-  ts: string;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
-}
-
-export interface SSEMarketStatusEvent {
-  type: 'market_status';
-  is_open: boolean;
-  message: string;
-}
-
-export interface SSEHeartbeatEvent {
-  type: 'heartbeat';
-  ts: string;
-}
-
-export type SSEEvent = SSEPriceEvent | SSEMarketStatusEvent | SSEHeartbeatEvent;
-
-// ── Stock List Filters ──────────────────────────────────────────────
-
-export interface StockFilters {
-  search?: string;
-  exchange?: string;
-  sector?: string;
-  industry?: string;
-  page?: number;
-  pageSize?: number;
 }

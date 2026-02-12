@@ -1,0 +1,16 @@
+---
+import Layout from './Layout.astro';
+import AppShell from '../components/AppShell';
+
+interface Props {
+  title?: string;
+}
+
+const { title = 'Stocks Terminal' } = Astro.props;
+---
+
+<Layout title={title}>
+  <AppShell client:load>
+    <slot />
+  </AppShell>
+</Layout>

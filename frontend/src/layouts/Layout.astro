@@ -1,46 +1,31 @@
 ---
+import '../styles/global.css';
+
 interface Props {
-  title: string;
-  description?: string;
-  requireAuth?: boolean;
+  title?: string;
 }
 
-const {
-  title,
-  description = 'Bloomberg-style stock data terminal',
-  requireAuth = false,
-} = Astro.props;
+const { title = 'Stocks Terminal' } = Astro.props;
 ---
 
 <!doctype html>
 <html lang="en" class="dark">
   <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="description" content={description} />
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0a0e17" />
     <meta name="color-scheme" content="dark" />
+    <meta name="description" content="Bloomberg-style stock terminal" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <title>{title} | StocksTerminal</title>
-    <style>
-      /* Prevent FOUC */
-      html {
-        background-color: #0a0e17;
-        color: #e2e8f0;
-      }
-    </style>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <title>{title}</title>
   </head>
-  <body class="min-h-screen bg-terminal-bg text-terminal-text">
+  <body class="bg-terminal-bg text-terminal-text font-mono min-h-screen antialiased">
     <slot />
-
-    {requireAuth && (
-      <script is:inline>
-        (function () {
-          var token = localStorage.getItem('access_token');
-          if (!token) {
-            window.location.replace('/login');
-          }
-        })();
-      </script>
-    )}
   </body>
 </html>

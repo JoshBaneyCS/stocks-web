@@ -4,15 +4,13 @@ metadata:
   name: stocks-web-frontend
   namespace: stocks-web
   labels:
-    app.kubernetes.io/name: frontend
-    app.kubernetes.io/component: ui
+    app: stocks-web-frontend
+    app.kubernetes.io/component: frontend
 spec:
   type: ClusterIP
   selector:
-    app.kubernetes.io/name: frontend
-    app.kubernetes.io/component: ui
+    app: stocks-web-frontend
   ports:
-    - name: http
-      port: 80
-      targetPort: http
+    - port: 80
+      targetPort: 80
       protocol: TCP

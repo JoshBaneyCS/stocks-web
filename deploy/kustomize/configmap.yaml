@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: stocks-web-config
+  namespace: stocks-web
+data:
+  PORT: "8080"
+  CORS_ORIGIN: "https://stocks.baneynet.net"
+  LOG_LEVEL: "info"
+  ACCESS_TOKEN_EXPIRY: "15m"
+  REFRESH_TOKEN_EXPIRY: "7d"

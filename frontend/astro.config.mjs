@@ -3,10 +3,7 @@ import react from '@astrojs/react';
 import tailwind from '@astrojs/tailwind';
 
 export default defineConfig({
-  integrations: [
-    react(),
-    tailwind(),
-  ],
+  integrations: [react(), tailwind()],
   output: 'static',
   vite: {
     server: {
@@ -19,11 +16,6 @@ export default defineConfig({
     },
     optimizeDeps: {
       exclude: ['stocks-wasm'],
-    },
-    build: {
-      rollupOptions: {
-        external: ['/wasm/stocks_wasm.js'],
-      },
     },
   },
 });

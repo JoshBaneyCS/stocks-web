@@ -11,164 +11,123 @@ import (
 	"github.com/JoshBaneyCS/stocks-web/backend/internal/models"
 )
 
-// FavoritesHandler handles user favorites management.
+// FavoritesHandler handles user favorites endpoints.
 type FavoritesHandler struct {
-	pool *pgxpool.Pool
+	DB *pgxpool.Pool
 }
 
-// NewFavoritesHandler creates a new favorites handler.
-func NewFavoritesHandler(pool *pgxpool.Pool) *FavoritesHandler {
-	return &FavoritesHandler{pool: pool}
+// NewFavoritesHandler creates a new FavoritesHandler.
+func NewFavoritesHandler(db *pgxpool.Pool) *FavoritesHandler {
+	return &FavoritesHandler{DB: db}
 }
 
-// FavoriteItem is the response shape for a single favorite.
-type FavoriteItem struct {
-	CompanyID int      `json:"company_id"`
-	Symbol    string   `json:"symbol"`
-	Name      *string  `json:"name"`
-	Exchange  *string  `json:"exchange"`
-	Sector    *string  `json:"sector"`
-	Industry  *string  `json:"industry"`
-	MarketCap *float64 `json:"market_cap"`
-}
-
-// Get handles GET /api/favorites
-// Returns the authenticated user's favorite stocks with company info.
+// Get returns the authenticated user's favorite instruments with latest prices.
 func (h *FavoritesHandler) Get(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	userID, ok := auth.UserIDFromContext(ctx)
-	if !ok {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "not authenticated"})
+	userID := auth.UserIDFromContext(r.Context())
+	if userID == "" {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
 		return
 	}
 
-	rows, err := h.pool.Query(ctx,
-		`SELECT c.id, c.symbol, c.name, c.exchange, c.sector, c.industry, c.market_cap
-		 FROM user_favorites uf
-		 JOIN companies c ON c.id = uf.company_id
-		 WHERE uf.user_id = $1
-		 ORDER BY c.symbol ASC`,
-		userID,
-	)
+	ctx := r.Context()
+
+	rows, err := h.DB.Query(ctx, `
+		SELECT i.id, i.symbol, i.name, i.exchange, i.currency, i.country, i.asset_class, i.is_active,
+		       im.last_price, im.market_cap, cp.sector, cp.industry
+		FROM user_favorites uf
+		JOIN instruments i ON i.id = uf.instrument_id
+		LEFT JOIN instrument_metrics im ON im.instrument_id = i.id
+		LEFT JOIN company_profiles cp ON cp.instrument_id = i.id
+		WHERE uf.user_id = $1
+		ORDER BY i.symbol ASC
+	`, userID)
 	if err != nil {
-		slog.Error("favorites.get: query", "error", err, "user_id", userID)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		slog.Error("failed to query favorites", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	defer rows.Close()
 
-	favorites := make([]FavoriteItem, 0)
+	items := make([]models.InstrumentListItem, 0)
 	for rows.Next() {
-		var f FavoriteItem
-		if err := rows.Scan(&f.CompanyID, &f.Symbol, &f.Name, &f.Exchange, &f.Sector, &f.Industry, &f.MarketCap); err != nil {
-			slog.Error("favorites.get: scan row", "error", err)
-			continue
+		var item models.InstrumentListItem
+		if err := rows.Scan(
+			&item.ID, &item.Symbol, &item.Name, &item.Exchange, &item.Currency,
+			&item.Country, &item.AssetClass, &item.IsActive,
+			&item.LastPrice, &item.MarketCap, &item.Sector, &item.Industry,
+		); err != nil {
+			slog.Error("failed to scan favorite row", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+			return
 		}
-		favorites = append(favorites, f)
+		item.IsFavorite = true
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		slog.Error("row iteration error", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"count":     len(favorites),
-		"favorites": favorites,
-	})
+	writeJSON(w, http.StatusOK, items)
 }
 
-// Update handles PUT /api/favorites
-// Batch replaces all favorites for the authenticated user.
-// Accepts {"company_ids": [1, 5, 12, ...]}
-// An empty array clears all favorites.
+// Update performs a batch replace of the user's favorites.
+// It deletes all existing favorites for the user and inserts the new set
+// within a single transaction.
 func (h *FavoritesHandler) Update(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	userID, ok := auth.UserIDFromContext(ctx)
-	if !ok {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "not authenticated"})
+	userID := auth.UserIDFromContext(r.Context())
+	if userID == "" {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
 		return
 	}
 
 	var req models.FavoritesUpdateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
-	// Limit max favorites to prevent abuse
-	if len(req.CompanyIDs) > 100 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "maximum 100 favorites allowed"})
-		return
-	}
+	ctx := r.Context()
 
-	// Transaction: delete all existing, then insert new set
-	tx, err := h.pool.Begin(ctx)
+	tx, err := h.DB.Begin(ctx)
 	if err != nil {
-		slog.Error("favorites.update: begin tx", "error", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		slog.Error("failed to begin transaction", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	defer tx.Rollback(ctx)
 
-	// Clear existing favorites
+	// Delete all existing favorites for this user
 	_, err = tx.Exec(ctx, `DELETE FROM user_favorites WHERE user_id = $1`, userID)
 	if err != nil {
-		slog.Error("favorites.update: delete existing", "error", err, "user_id", userID)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		slog.Error("failed to delete existing favorites", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
-	// Insert new favorites (skip invalid company_ids silently)
-	if len(req.CompanyIDs) > 0 {
-		// Validate that all company_ids actually exist
-		// Use a single query with ANY to batch-validate
-		rows, err := tx.Query(ctx,
-			`SELECT id FROM companies WHERE id = ANY($1)`,
-			req.CompanyIDs,
+	// Insert new favorites
+	for _, instrumentID := range req.InstrumentIDs {
+		_, err = tx.Exec(ctx,
+			`INSERT INTO user_favorites (user_id, instrument_id) VALUES ($1, $2)
+			 ON CONFLICT DO NOTHING`,
+			userID, instrumentID,
 		)
 		if err != nil {
-			slog.Error("favorites.update: validate companies", "error", err)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+			slog.Error("failed to insert favorite", "error", err, "instrument_id", instrumentID)
+			writeError(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
-
-		validIDs := make(map[int]bool)
-		for rows.Next() {
-			var id int
-			if err := rows.Scan(&id); err == nil {
-				validIDs[id] = true
-			}
-		}
-		rows.Close()
-
-		// Insert only valid IDs
-		insertedCount := 0
-		for _, companyID := range req.CompanyIDs {
-			if !validIDs[companyID] {
-				continue
-			}
-			_, err := tx.Exec(ctx,
-				`INSERT INTO user_favorites (user_id, company_id, created_at)
-				 VALUES ($1, $2, NOW())
-				 ON CONFLICT (user_id, company_id) DO NOTHING`,
-				userID, companyID,
-			)
-			if err != nil {
-				slog.Error("favorites.update: insert favorite", "error", err,
-					"user_id", userID, "company_id", companyID)
-				continue
-			}
-			insertedCount++
-		}
-
-		slog.Info("favorites updated",
-			"user_id", userID,
-			"requested", len(req.CompanyIDs),
-			"inserted", insertedCount,
-		)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		slog.Error("favorites.update: commit tx", "error", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		slog.Error("failed to commit transaction", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"message": "favorites updated"})
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"message": "favorites updated",
+		"count":   len(req.InstrumentIDs),
+	})
 }

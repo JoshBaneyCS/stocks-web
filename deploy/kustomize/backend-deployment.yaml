@@ -4,8 +4,8 @@ metadata:
   name: stocks-web-backend
   namespace: stocks-web
   labels:
-    app.kubernetes.io/name: backend
-    app.kubernetes.io/component: api
+    app: stocks-web-backend
+    app.kubernetes.io/component: backend
 spec:
   replicas: 2
   strategy:
@@ -15,28 +15,24 @@ spec:
       maxUnavailable: 0
   selector:
     matchLabels:
-      app.kubernetes.io/name: backend
-      app.kubernetes.io/component: api
+      app: stocks-web-backend
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: backend
-        app.kubernetes.io/component: api
+        app: stocks-web-backend
+        app.kubernetes.io/component: backend
     spec:
+      securityContext:
+        runAsNonRoot: true
       containers:
         - name: backend
           image: ghcr.io/joshbaneycs/stocks-web-backend:latest
           ports:
-            - name: http
-              containerPort: 8080
+            - containerPort: 8080
               protocol: TCP
           env:
-            - name: PORT
-              value: "8080"
-            - name: LOG_LEVEL
-              value: "info"
-            - name: CORS_ORIGIN
-              value: "https://stocks.baneynet.net"
+            - name: TZ
+              value: "America/New_York"
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
@@ -57,22 +53,38 @@ spec:
                 secretKeyRef:
                   name: stocks-web-secrets
                   key: ADMIN_SECRET
+            - name: PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: stocks-web-config
+                  key: PORT
+            - name: CORS_ORIGIN
+              valueFrom:
+                configMapKeyRef:
+                  name: stocks-web-config
+                  key: CORS_ORIGIN
+            - name: ACCESS_TOKEN_EXPIRY
+              valueFrom:
+                configMapKeyRef:
+                  name: stocks-web-config
+                  key: ACCESS_TOKEN_EXPIRY
+            - name: REFRESH_TOKEN_EXPIRY
+              valueFrom:
+                configMapKeyRef:
+                  name: stocks-web-config
+                  key: REFRESH_TOKEN_EXPIRY
           livenessProbe:
             httpGet:
               path: /healthz
-              port: http
-            initialDelaySeconds: 5
-            periodSeconds: 15
-            timeoutSeconds: 3
-            failureThreshold: 3
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
           readinessProbe:
             httpGet:
               path: /readyz
-              port: http
-            initialDelaySeconds: 3
+              port: 8080
+            initialDelaySeconds: 5
             periodSeconds: 10
-            timeoutSeconds: 3
-            failureThreshold: 3
           resources:
             requests:
               cpu: 100m
@@ -81,9 +93,4 @@ spec:
               cpu: 500m
               memory: 256Mi
           securityContext:
-            runAsNonRoot: true
-            runAsUser: 65534
             readOnlyRootFilesystem: true
-            allowPrivilegeEscalation: false
-      restartPolicy: Always
-      terminationGracePeriodSeconds: 30

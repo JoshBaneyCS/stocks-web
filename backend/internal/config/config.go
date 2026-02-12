@@ -1,99 +1,76 @@
 package config
 
 import (
+	"fmt"
 	"os"
-	"strconv"
+	"strings"
 	"time"
 )
 
-// Config holds all application configuration loaded from environment variables.
+// Config holds all configuration values for the server.
 type Config struct {
-	// Server
-	Port string
-
-	// Database
-	DatabaseURL string
-	DBHost      string // extracted for logging only (no secrets)
-	DBPoolMax   int
-
-	// Auth
+	DatabaseURL        string
+	Port               string
 	JWTSecret          string
+	RefreshSecret      string
+	AdminSecret        string
+	CORSOrigin         string
 	AccessTokenExpiry  time.Duration
 	RefreshTokenExpiry time.Duration
-
-	// Admin
-	AdminSecret string
-
-	// CORS
-	CORSOrigin string
 }
 
-// Load reads configuration from environment variables with sensible defaults.
+// Load reads configuration from environment variables.
+// It panics if any required variable is missing.
 func Load() *Config {
 	cfg := &Config{
-		Port:               envOrDefault("PORT", "8080"),
-		DatabaseURL:        envOrDefault("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/stock-data?sslmode=disable"),
-		DBPoolMax:          envOrDefaultInt("DB_POOL_MAX", 20),
-		JWTSecret:          envOrDefault("JWT_SECRET", "change-me-in-production"),
-		AccessTokenExpiry:  envOrDefaultDuration("ACCESS_TOKEN_EXPIRY", 15*time.Minute),
-		RefreshTokenExpiry: envOrDefaultDuration("REFRESH_TOKEN_EXPIRY", 7*24*time.Hour),
-		AdminSecret:        envOrDefault("ADMIN_SECRET", ""),
-		CORSOrigin:         envOrDefault("CORS_ORIGIN", "https://stocks.baneynet.net"),
+		DatabaseURL:   requireEnv("DATABASE_URL"),
+		JWTSecret:     requireEnv("JWT_SECRET"),
+		RefreshSecret: requireEnv("REFRESH_SECRET"),
+		AdminSecret:   requireEnv("ADMIN_SECRET"),
+		Port:          getEnvOrDefault("PORT", "8080"),
+		CORSOrigin:    getEnvOrDefault("CORS_ORIGIN", "*"),
 	}
 
-	// Extract host for safe logging
-	cfg.DBHost = extractHost(cfg.DatabaseURL)
+	var err error
+	cfg.AccessTokenExpiry, err = parseDuration(getEnvOrDefault("ACCESS_TOKEN_EXPIRY", "15m"))
+	if err != nil {
+		panic(fmt.Sprintf("invalid ACCESS_TOKEN_EXPIRY: %v", err))
+	}
+
+	cfg.RefreshTokenExpiry, err = parseDuration(getEnvOrDefault("REFRESH_TOKEN_EXPIRY", "7d"))
+	if err != nil {
+		panic(fmt.Sprintf("invalid REFRESH_TOKEN_EXPIRY: %v", err))
+	}
 
 	return cfg
 }
 
-func envOrDefault(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
+func requireEnv(key string) string {
+	val := os.Getenv(key)
+	if val == "" {
+		panic(fmt.Sprintf("required environment variable %s is not set", key))
+	}
+	return val
+}
+
+func getEnvOrDefault(key, fallback string) string {
+	if val := os.Getenv(key); val != "" {
+		return val
 	}
 	return fallback
 }
 
-func envOrDefaultInt(key string, fallback int) int {
-	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
+// parseDuration parses duration strings like "15m", "1h", "7d".
+// Extends Go's time.ParseDuration to support "d" suffix for days.
+func parseDuration(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	if strings.HasSuffix(s, "d") {
+		numStr := strings.TrimSuffix(s, "d")
+		var days int
+		if _, err := fmt.Sscanf(numStr, "%d", &days); err != nil {
+			return 0, fmt.Errorf("cannot parse %q as duration: %w", s, err)
 		}
+		return time.Duration(days) * 24 * time.Hour, nil
 	}
-	return fallback
-}
-
-func envOrDefaultDuration(key string, fallback time.Duration) time.Duration {
-	if v := os.Getenv(key); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			return d
-		}
-	}
-	return fallback
-}
-
-// extractHost pulls just the host portion from a Postgres URL for safe logging.
-func extractHost(dsn string) string {
-	// Naive extraction: find @ and next / or :
-	start := 0
-	for i, c := range dsn {
-		if c == '@' {
-			start = i + 1
-			break
-		}
-	}
-	if start == 0 {
-		return "unknown"
-	}
-	end := len(dsn)
-	for i := start; i < len(dsn); i++ {
-		if dsn[i] == ':' || dsn[i] == '/' || dsn[i] == '?' {
-			end = i
-			break
-		}
-	}
-	if start >= end {
-		return "unknown"
-	}
-	return dsn[start:end]
+	return time.ParseDuration(s)
 }

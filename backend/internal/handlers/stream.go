@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -13,57 +12,50 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/JoshBaneyCS/stocks-web/backend/internal/auth"
 	"github.com/JoshBaneyCS/stocks-web/backend/internal/market"
 	"github.com/JoshBaneyCS/stocks-web/backend/internal/models"
 )
 
-// StreamHandler handles SSE streaming endpoints for live price data.
+const (
+	// Polling intervals
+	pollIntervalMarketOpen   = 5 * time.Second
+	pollIntervalMarketClosed = 30 * time.Second
+	heartbeatInterval        = 30 * time.Second
+)
+
+// StreamHandler handles SSE streaming endpoints.
 type StreamHandler struct {
-	pool    *pgxpool.Pool
-	checker *market.Checker
+	DB      *pgxpool.Pool
+	Checker *market.Checker
 }
 
-// NewStreamHandler creates a new stream handler.
-func NewStreamHandler(pool *pgxpool.Pool, checker *market.Checker) *StreamHandler {
-	return &StreamHandler{pool: pool, checker: checker}
+// NewStreamHandler creates a new StreamHandler.
+func NewStreamHandler(db *pgxpool.Pool, checker *market.Checker) *StreamHandler {
+	return &StreamHandler{DB: db, Checker: checker}
 }
 
-// sseEvent represents a Server-Sent Event.
-type sseEvent struct {
-	Event string      `json:"-"`
-	Data  interface{} `json:"data"`
-}
-
-// StockStream handles GET /api/stream/stocks/{symbol}
-//
-// SSE protocol:
-//   - event: price        → new 1-minute bar data
-//   - event: market_status → open/closed state change
-//   - event: heartbeat    → keepalive (every 30s)
-//
-// Behavior:
-//   - When market is OPEN: polls DB every 10s for new 1-minute bars
-//   - When market is CLOSED: sends market_closed event, then heartbeats only
-//   - Detects market open/close transitions and sends status events
-func (h *StreamHandler) StockStream(w http.ResponseWriter, r *http.Request) {
+// InstrumentStream is an SSE endpoint that streams price updates for a single instrument.
+// GET /api/stream/{symbol}?token=...
+func (h *StreamHandler) InstrumentStream(w http.ResponseWriter, r *http.Request) {
 	symbol := strings.ToUpper(chi.URLParam(r, "symbol"))
 	if symbol == "" {
-		http.Error(w, `{"error":"symbol is required"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "symbol is required")
 		return
 	}
 
-	// Resolve company_id
-	var companyID int
-	err := h.pool.QueryRow(r.Context(),
-		`SELECT id FROM companies WHERE UPPER(symbol) = $1`, symbol,
-	).Scan(&companyID)
-	if err == pgx.ErrNoRows {
-		http.Error(w, `{"error":"stock not found"}`, http.StatusNotFound)
-		return
-	}
+	ctx := r.Context()
+
+	// Look up instrument
+	var instrumentID int
+	err := h.DB.QueryRow(ctx, `SELECT id FROM instruments WHERE symbol = $1`, symbol).Scan(&instrumentID)
 	if err != nil {
-		slog.Error("stream: resolve company", "error", err, "symbol", symbol)
-		http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
+		if err == pgx.ErrNoRows {
+			writeError(w, http.StatusNotFound, "instrument not found")
+		} else {
+			slog.Error("failed to query instrument for stream", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
 		return
 	}
 
@@ -71,149 +63,158 @@ func (h *StreamHandler) StockStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no") // disable nginx buffering
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		http.Error(w, `{"error":"streaming not supported"}`, http.StatusInternalServerError)
+		slog.Error("streaming not supported")
+		return
+	}
+
+	// Send initial connection event
+	fmt.Fprintf(w, "event: connected\ndata: {\"symbol\":%q}\n\n", symbol)
+	flusher.Flush()
+
+	lastHeartbeat := time.Now()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		// Determine poll interval based on market status
+		pollInterval := pollIntervalMarketClosed
+		if h.Checker.IsMarketOpen() {
+			pollInterval = pollIntervalMarketOpen
+		}
+
+		// Fetch latest quote
+		var event models.PriceEvent
+		var ts time.Time
+		err := h.DB.QueryRow(ctx, `
+			SELECT last_price, bid, ask, volume, ts
+			FROM latest_quote_per_instrument
+			WHERE instrument_id = $1
+		`, instrumentID).Scan(&event.LastPrice, &event.Bid, &event.Ask, &event.Volume, &ts)
+
+		if err == nil {
+			event.Symbol = symbol
+			event.Timestamp = ts.Format(time.RFC3339)
+			data, jsonErr := json.Marshal(event)
+			if jsonErr == nil {
+				fmt.Fprintf(w, "event: price\ndata: %s\n\n", data)
+				flusher.Flush()
+			}
+		} else if err != pgx.ErrNoRows {
+			slog.Error("failed to fetch quote for stream", "error", err, "symbol", symbol)
+		}
+
+		// Send heartbeat if needed
+		if time.Since(lastHeartbeat) >= heartbeatInterval {
+			fmt.Fprintf(w, "event: heartbeat\ndata: {\"ts\":%q}\n\n", time.Now().Format(time.RFC3339))
+			flusher.Flush()
+			lastHeartbeat = time.Now()
+		}
+
+		// Sleep for the poll interval, checking for context cancellation
+		timer := time.NewTimer(pollInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
+}
+
+// FavoritesStream is an SSE endpoint that multiplexes price updates for all of a user's favorites.
+// GET /api/stream/favorites?token=...
+func (h *StreamHandler) FavoritesStream(w http.ResponseWriter, r *http.Request) {
+	userID := auth.UserIDFromContext(r.Context())
+	if userID == "" {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
 		return
 	}
 
 	ctx := r.Context()
 
-	// Send initial market status
-	status := h.checker.Check()
-	sendSSE(w, flusher, "market_status", status)
+	// Set SSE headers
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
 
-	// Track last seen timestamp to only send new bars
-	lastSeenTS := h.getLatestBarTS(ctx, companyID)
-
-	// Track market state for transition detection
-	wasOpen := status.IsOpen
-
-	// Polling intervals
-	pollOpen := 10 * time.Second   // poll DB every 10s when market open
-	pollClosed := 60 * time.Second // poll less frequently when closed
-	heartbeat := 30 * time.Second  // keepalive interval
-
-	pollInterval := pollClosed
-	if wasOpen {
-		pollInterval = pollOpen
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		slog.Error("streaming not supported")
+		return
 	}
 
-	pollTicker := time.NewTicker(pollInterval)
-	defer pollTicker.Stop()
+	// Send initial connection event
+	fmt.Fprintf(w, "event: connected\ndata: {\"stream\":\"favorites\"}\n\n")
+	flusher.Flush()
 
-	heartbeatTicker := time.NewTicker(heartbeat)
-	defer heartbeatTicker.Stop()
-
-	slog.Info("stream started", "symbol", symbol, "company_id", companyID, "market_open", wasOpen)
+	lastHeartbeat := time.Now()
 
 	for {
 		select {
 		case <-ctx.Done():
-			slog.Info("stream closed by client", "symbol", symbol)
 			return
+		default:
+		}
 
-		case <-heartbeatTicker.C:
-			sendSSE(w, flusher, "heartbeat", map[string]interface{}{
-				"ts":     time.Now().UTC(),
-				"symbol": symbol,
-			})
+		pollInterval := pollIntervalMarketClosed
+		if h.Checker.IsMarketOpen() {
+			pollInterval = pollIntervalMarketOpen
+		}
 
-		case <-pollTicker.C:
-			// Check for market state transitions
-			currentStatus := h.checker.Check()
-			isOpen := currentStatus.IsOpen
-
-			if isOpen != wasOpen {
-				sendSSE(w, flusher, "market_status", currentStatus)
-				wasOpen = isOpen
-
-				// Adjust poll interval
-				pollTicker.Stop()
-				if isOpen {
-					pollInterval = pollOpen
-				} else {
-					pollInterval = pollClosed
+		// Fetch all favorites with latest quotes
+		rows, err := h.DB.Query(ctx, `
+			SELECT i.symbol, lq.last_price, lq.bid, lq.ask, lq.volume, lq.ts
+			FROM user_favorites uf
+			JOIN instruments i ON i.id = uf.instrument_id
+			LEFT JOIN latest_quote_per_instrument lq ON lq.instrument_id = i.id
+			WHERE uf.user_id = $1
+		`, userID)
+		if err != nil {
+			slog.Error("failed to query favorites for stream", "error", err)
+		} else {
+			for rows.Next() {
+				var event models.PriceEvent
+				var ts *time.Time
+				if scanErr := rows.Scan(&event.Symbol, &event.LastPrice, &event.Bid, &event.Ask, &event.Volume, &ts); scanErr != nil {
+					slog.Error("failed to scan favorite stream row", "error", scanErr)
+					continue
 				}
-				pollTicker = time.NewTicker(pollInterval)
-				slog.Info("market state changed", "symbol", symbol, "is_open", isOpen)
-			}
-
-			// Only poll for new bars when market is open
-			if !isOpen {
-				continue
-			}
-
-			// Query for new bars since lastSeenTS
-			newBars := h.getNewBars(ctx, companyID, lastSeenTS)
-			for _, bar := range newBars {
-				sendSSE(w, flusher, "price", map[string]interface{}{
-					"symbol": symbol,
-					"bar":    bar,
-				})
-				if bar.Timestamp.After(lastSeenTS) {
-					lastSeenTS = bar.Timestamp
+				if ts != nil {
+					event.Timestamp = ts.Format(time.RFC3339)
+				}
+				data, jsonErr := json.Marshal(event)
+				if jsonErr == nil {
+					fmt.Fprintf(w, "event: price\ndata: %s\n\n", data)
 				}
 			}
+			rows.Close()
+			flusher.Flush()
+		}
+
+		// Heartbeat
+		if time.Since(lastHeartbeat) >= heartbeatInterval {
+			fmt.Fprintf(w, "event: heartbeat\ndata: {\"ts\":%q}\n\n", time.Now().Format(time.RFC3339))
+			flusher.Flush()
+			lastHeartbeat = time.Now()
+		}
+
+		timer := time.NewTimer(pollInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
 		}
 	}
-}
-
-// getLatestBarTS returns the most recent 1-minute bar timestamp for a company.
-func (h *StreamHandler) getLatestBarTS(ctx context.Context, companyID int) time.Time {
-	var ts time.Time
-	err := h.pool.QueryRow(ctx,
-		`SELECT ts FROM price_bars
-		 WHERE company_id = $1 AND interval = '1min'
-		 ORDER BY ts DESC LIMIT 1`,
-		companyID,
-	).Scan(&ts)
-	if err != nil {
-		// If no bars exist, start from beginning of today
-		return time.Now().Truncate(24 * time.Hour)
-	}
-	return ts
-}
-
-// getNewBars fetches 1-minute bars newer than the given timestamp.
-func (h *StreamHandler) getNewBars(ctx context.Context, companyID int, after time.Time) []models.PricePoint {
-	rows, err := h.pool.Query(ctx,
-		`SELECT ts, open, high, low, close, volume
-		 FROM price_bars
-		 WHERE company_id = $1 AND interval = '1min' AND ts > $2
-		 ORDER BY ts ASC
-		 LIMIT 10`,
-		companyID, after,
-	)
-	if err != nil {
-		slog.Error("stream: query new bars", "error", err, "company_id", companyID)
-		return nil
-	}
-	defer rows.Close()
-
-	bars := make([]models.PricePoint, 0)
-	for rows.Next() {
-		var p models.PricePoint
-		if err := rows.Scan(&p.Timestamp, &p.Open, &p.High, &p.Low, &p.Close, &p.Volume); err != nil {
-			slog.Error("stream: scan bar", "error", err)
-			continue
-		}
-		bars = append(bars, p)
-	}
-	return bars
-}
-
-// sendSSE writes a single Server-Sent Event to the response writer.
-func sendSSE(w http.ResponseWriter, flusher http.Flusher, event string, data interface{}) {
-	jsonData, err := json.Marshal(data)
-	if err != nil {
-		slog.Error("sse: marshal data", "error", err, "event", event)
-		return
-	}
-
-	fmt.Fprintf(w, "event: %s\n", event)
-	fmt.Fprintf(w, "data: %s\n\n", jsonData)
-	flusher.Flush()
 }

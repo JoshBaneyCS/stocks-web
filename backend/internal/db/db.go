@@ -6,39 +6,33 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/JoshBaneyCS/stocks-web/backend/internal/config"
 )
 
-// NewPool creates a pgx connection pool configured from the application config.
-func NewPool(ctx context.Context, cfg *config.Config) (*pgxpool.Pool, error) {
-	poolCfg, err := pgxpool.ParseConfig(cfg.DatabaseURL)
+// NewPool creates and validates a new PostgreSQL connection pool.
+func NewPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
+	cfg, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
-		return nil, fmt.Errorf("parse database url: %w", err)
+		return nil, fmt.Errorf("parsing database URL: %w", err)
 	}
 
-	// Pool sizing
-	poolCfg.MaxConns = int32(cfg.DBPoolMax)
-	poolCfg.MinConns = 2
+	cfg.MinConns = 2
+	cfg.MaxConns = 20
+	cfg.MaxConnLifetime = 30 * time.Minute
+	cfg.MaxConnIdleTime = 5 * time.Minute
+	cfg.HealthCheckPeriod = 30 * time.Second
 
-	// Timeouts
-	poolCfg.MaxConnLifetime = 30 * time.Minute
-	poolCfg.MaxConnIdleTime = 5 * time.Minute
-	poolCfg.HealthCheckPeriod = 30 * time.Second
-
-	// Connect with timeout
 	connectCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	pool, err := pgxpool.NewWithConfig(connectCtx, poolCfg)
+	pool, err := pgxpool.NewWithConfig(connectCtx, cfg)
 	if err != nil {
-		return nil, fmt.Errorf("create pool: %w", err)
+		return nil, fmt.Errorf("creating connection pool: %w", err)
 	}
 
 	// Verify connectivity
 	if err := pool.Ping(connectCtx); err != nil {
 		pool.Close()
-		return nil, fmt.Errorf("ping database: %w", err)
+		return nil, fmt.Errorf("pinging database: %w", err)
 	}
 
 	return pool, nil

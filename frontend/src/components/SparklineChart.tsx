@@ -1,124 +1,72 @@
-import { useRef, useEffect } from 'react';
-import type { PricePoint } from '@/lib/types';
+import { useEffect, useRef } from 'react';
+import { createChart, type IChartApi, ColorType } from 'lightweight-charts';
 
-interface Props {
-  data: PricePoint[];
+interface SparklineChartProps {
+  data: { time: string; value: number }[];
   width?: number;
   height?: number;
-  positive?: boolean;
-  muted?: boolean;
+  color?: string;
 }
 
-/**
- * Lightweight canvas-based sparkline chart.
- * Green if price is up (or positive=true), red if down, gray if muted.
- */
 export default function SparklineChart({
   data,
   width = 120,
-  height = 32,
-  positive,
-  muted = false,
-}: Props) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  height = 40,
+  color = '#3b82f6',
+}: SparklineChartProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<IChartApi | null>(null);
 
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || data.length < 2) return;
+    if (!containerRef.current || data.length === 0) return;
 
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    const chart = createChart(containerRef.current, {
+      width,
+      height,
+      layout: {
+        background: { type: ColorType.Solid, color: 'transparent' },
+        textColor: 'transparent',
+      },
+      grid: {
+        vertLines: { visible: false },
+        horzLines: { visible: false },
+      },
+      leftPriceScale: { visible: false },
+      rightPriceScale: { visible: false },
+      timeScale: { visible: false },
+      crosshair: {
+        vertLine: { visible: false },
+        horzLine: { visible: false },
+      },
+      handleScroll: false,
+      handleScale: false,
+    });
 
-    // Handle high-DPI displays
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = width * dpr;
-    canvas.height = height * dpr;
-    ctx.scale(dpr, dpr);
+    // Determine color based on trend
+    const firstVal = data[0]?.value ?? 0;
+    const lastVal = data[data.length - 1]?.value ?? 0;
+    const lineColor = lastVal >= firstVal ? '#22c55e' : '#ef4444';
+    const topColor = lastVal >= firstVal ? 'rgba(34,197,94,0.2)' : 'rgba(239,68,68,0.2)';
 
-    // Clear
-    ctx.clearRect(0, 0, width, height);
+    const series = chart.addAreaSeries({
+      lineColor: color === '#3b82f6' ? lineColor : color,
+      topColor: color === '#3b82f6' ? topColor : `${color}33`,
+      bottomColor: 'transparent',
+      lineWidth: 1,
+      priceLineVisible: false,
+      crosshairMarkerVisible: false,
+      lastValueVisible: false,
+    });
 
-    // Determine direction
-    const first = data[0].value;
-    const last = data[data.length - 1].value;
-    const isPositive = positive ?? last >= first;
+    series.setData(data as { time: string; value: number }[]);
+    chart.timeScale().fitContent();
+    chartRef.current = chart;
 
-    // Colors
-    const lineColor = muted
-      ? '#334155' // terminal-muted
-      : isPositive
-        ? '#22c55e' // terminal-green
-        : '#ef4444'; // terminal-red
+    return () => {
+      chart.remove();
+      chartRef.current = null;
+    };
+  }, [data, width, height, color]);
 
-    const fillColor = muted
-      ? 'rgba(51, 65, 85, 0.1)'
-      : isPositive
-        ? 'rgba(34, 197, 94, 0.08)'
-        : 'rgba(239, 68, 68, 0.08)';
-
-    // Compute bounds
-    const values = data.map((d) => d.value);
-    const minVal = Math.min(...values);
-    const maxVal = Math.max(...values);
-    const range = maxVal - minVal || 1;
-
-    const padding = 2;
-    const chartWidth = width - padding * 2;
-    const chartHeight = height - padding * 2;
-
-    // Map data to coordinates
-    const points: [number, number][] = data.map((d, i) => [
-      padding + (i / (data.length - 1)) * chartWidth,
-      padding + chartHeight - ((d.value - minVal) / range) * chartHeight,
-    ]);
-
-    // Draw filled area
-    ctx.beginPath();
-    ctx.moveTo(points[0][0], height);
-    for (const [x, y] of points) {
-      ctx.lineTo(x, y);
-    }
-    ctx.lineTo(points[points.length - 1][0], height);
-    ctx.closePath();
-    ctx.fillStyle = fillColor;
-    ctx.fill();
-
-    // Draw line
-    ctx.beginPath();
-    ctx.moveTo(points[0][0], points[0][1]);
-    for (let i = 1; i < points.length; i++) {
-      ctx.lineTo(points[i][0], points[i][1]);
-    }
-    ctx.strokeStyle = lineColor;
-    ctx.lineWidth = 1.5;
-    ctx.lineJoin = 'round';
-    ctx.lineCap = 'round';
-    ctx.stroke();
-
-    // Draw end dot
-    const [lastX, lastY] = points[points.length - 1];
-    ctx.beginPath();
-    ctx.arc(lastX, lastY, 2, 0, Math.PI * 2);
-    ctx.fillStyle = lineColor;
-    ctx.fill();
-  }, [data, width, height, positive, muted]);
-
-  if (data.length < 2) {
-    return (
-      <div
-        className="flex items-center justify-center text-2xs text-terminal-muted"
-        style={{ width, height }}
-      >
-        No data
-      </div>
-    );
-  }
-
-  return (
-    <canvas
-      ref={canvasRef}
-      style={{ width, height }}
-      className="block"
-    />
-  );
+  return <div ref={containerRef} className="inline-block" />;
 }
