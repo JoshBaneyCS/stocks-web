@@ -1,6 +1,6 @@
 # Stage 0: Build WASM
 FROM rust:1.85-slim AS wasm-builder
-RUN cargo install wasm-pack
+RUN cargo install wasm-pack --locked
 WORKDIR /wasm
 COPY wasm/ .
 RUN wasm-pack build --target web --out-dir /wasm-out
