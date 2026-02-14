@@ -50,7 +50,19 @@ async function fetchWithAuth(
   return response;
 }
 
+let refreshPromise: Promise<boolean> | null = null;
+
 async function attemptRefresh(): Promise<boolean> {
+  if (refreshPromise) return refreshPromise;
+  refreshPromise = doRefresh();
+  try {
+    return await refreshPromise;
+  } finally {
+    refreshPromise = null;
+  }
+}
+
+async function doRefresh(): Promise<boolean> {
   try {
     const response = await fetch('/api/auth/refresh', {
       method: 'POST',
@@ -183,10 +195,20 @@ export async function getFundamentals(
 }
 
 export interface PriceParams {
-  interval?: '1d' | '1h' | '1min';
+  interval?: '1min' | '5min' | '15min' | '1h' | '1d' | '1w' | '1m';
   from?: string;
   to?: string;
   limit?: number;
+}
+
+export interface FilterOptions {
+  exchanges: string[];
+  asset_classes: string[];
+  countries: string[];
+}
+
+export async function getFilters(): Promise<FilterOptions> {
+  return apiGet<FilterOptions>('/api/instruments/filters');
 }
 
 export async function getPrices(

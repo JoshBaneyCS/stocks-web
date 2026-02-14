@@ -66,6 +66,8 @@ func main() {
 	dashboardHandler := handlers.NewDashboardHandler(authPool, marketPool, checker)
 	streamHandler := handlers.NewStreamHandler(authPool, marketPool, checker)
 	adminHandler := handlers.NewAdminHandler(authPool, cfg.AdminSecret)
+	apiKeysHandler := handlers.NewAPIKeysHandler(authPool)
+	apiV1Handler := handlers.NewAPIV1Handler(authPool, marketPool)
 
 	// Set up router
 	r := chi.NewRouter()
@@ -78,7 +80,7 @@ func main() {
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{cfg.CORSOrigin},
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-Admin-Secret"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-Admin-Secret", "X-API-Key"},
 		ExposedHeaders:   []string{"Link"},
 		AllowCredentials: true,
 		MaxAge:           300,
@@ -122,6 +124,7 @@ func main() {
 	// Instrument routes (public with optional auth for is_favorite)
 	r.Route("/api/instruments", func(r chi.Router) {
 		r.With(auth.OptionalAuth(cfg.JWTSecret)).Get("/", instrumentsHandler.List)
+		r.Get("/filters", instrumentsHandler.Filters)
 		r.Get("/{symbol}", instrumentsHandler.Detail)
 		r.Get("/{symbol}/profile", instrumentsHandler.Profile)
 		r.Get("/{symbol}/fundamentals", instrumentsHandler.Fundamentals)
@@ -155,6 +158,30 @@ func main() {
 	r.Route("/api/admin", func(r chi.Router) {
 		r.Use(adminHandler.RequireAdminSecret)
 		r.Post("/referral-codes", adminHandler.CreateReferralCode)
+	})
+
+	// API key management routes (authenticated via JWT)
+	r.Route("/api/api-keys", func(r chi.Router) {
+		r.Use(auth.RequireAuth(cfg.JWTSecret))
+		r.Post("/", apiKeysHandler.Create)
+		r.Get("/", apiKeysHandler.List)
+		r.Delete("/{id}", apiKeysHandler.Revoke)
+	})
+
+	// Public API v1 routes (authenticated via API key)
+	r.Route("/api/v1", func(r chi.Router) {
+		r.Use(auth.RequireAPIKey(authPool))
+		r.Use(auth.APIKeyRateLimit(60))
+
+		r.Get("/instruments", apiV1Handler.ListInstruments)
+		r.Get("/instruments/{symbol}", apiV1Handler.GetInstrument)
+		r.Get("/instruments/{symbol}/prices", apiV1Handler.GetPrices)
+		r.Get("/instruments/{symbol}/quotes", apiV1Handler.GetQuotes)
+		r.Get("/instruments/{symbol}/profile", apiV1Handler.GetProfile)
+		r.Get("/instruments/{symbol}/fundamentals", apiV1Handler.GetFundamentals)
+
+		// SSE stream via API key
+		r.Get("/stream/{symbol}", streamHandler.InstrumentStream)
 	})
 
 	// Create server

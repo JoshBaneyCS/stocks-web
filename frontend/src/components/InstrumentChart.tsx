@@ -18,7 +18,8 @@ interface InstrumentChartProps {
   marketClosed?: boolean;
 }
 
-type Interval = '1min' | '1h' | '1d';
+type DateRange = 'live' | '1D' | '1W' | '1M' | '3M' | '6M' | '1Y' | '2Y';
+type BarInterval = '1min' | '5min' | '15min' | '1h' | '1d' | '1w' | '1m';
 type Indicator = 'sma' | 'ema' | 'vwap' | 'rsi';
 
 const INDICATOR_COLORS: Record<Indicator, string> = {
@@ -27,6 +28,56 @@ const INDICATOR_COLORS: Record<Indicator, string> = {
   vwap: '#06b6d4',
   rsi: '#f97316',
 };
+
+const DEFAULT_INTERVALS: Record<DateRange, BarInterval> = {
+  live: '1min',
+  '1D': '1min',
+  '1W': '1h',
+  '1M': '1d',
+  '3M': '1d',
+  '6M': '1d',
+  '1Y': '1d',
+  '2Y': '1w',
+};
+
+const VALID_INTERVALS: Record<DateRange, BarInterval[]> = {
+  live: ['1min'],
+  '1D': ['1min', '5min', '15min'],
+  '1W': ['5min', '15min', '1h'],
+  '1M': ['15min', '1h', '1d'],
+  '3M': ['1h', '1d'],
+  '6M': ['1d', '1w'],
+  '1Y': ['1d', '1w'],
+  '2Y': ['1d', '1w', '1m'],
+};
+
+const INTERVAL_LABELS: Record<BarInterval, string> = {
+  '1min': '1m',
+  '5min': '5m',
+  '15min': '15m',
+  '1h': '1H',
+  '1d': '1D',
+  '1w': '1W',
+  '1m': '1M',
+};
+
+const DATE_RANGE_OFFSETS: Record<string, number> = {
+  '1D': 1,
+  '1W': 7,
+  '1M': 30,
+  '3M': 90,
+  '6M': 180,
+  '1Y': 365,
+  '2Y': 730,
+};
+
+function getDateRangeParams(range: DateRange): { from?: string } {
+  if (range === 'live') return {};
+  const days = DATE_RANGE_OFFSETS[range];
+  if (!days) return {};
+  const from = new Date(Date.now() - days * 86400000);
+  return { from: from.toISOString() };
+}
 
 export default function InstrumentChart({ symbol, marketClosed = false }: InstrumentChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -38,7 +89,8 @@ export default function InstrumentChart({ symbol, marketClosed = false }: Instru
   const rsiSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
 
-  const [interval, setInterval] = useState<Interval>('1d');
+  const [dateRange, setDateRange] = useState<DateRange>('1M');
+  const [barInterval, setBarInterval] = useState<BarInterval>('1d');
   const [indicators, setIndicators] = useState<Set<Indicator>>(new Set());
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -61,19 +113,31 @@ export default function InstrumentChart({ symbol, marketClosed = false }: Instru
     });
   };
 
+  const handleDateRangeChange = (range: DateRange) => {
+    setDateRange(range);
+    setBarInterval(DEFAULT_INTERVALS[range]);
+  };
+
   // Fetch price data
   const fetchPrices = useCallback(async () => {
     setIsLoading(true);
     setError(null);
     try {
-      const params: PriceParams = { interval };
-      if (interval === '1min') {
-        params.limit = 390; // one trading day
-      } else if (interval === '1h') {
+      const rangeParams = getDateRangeParams(dateRange);
+      const params: PriceParams = {
+        interval: barInterval,
+        from: rangeParams.from,
+      };
+
+      // Set sensible limits based on range
+      if (dateRange === 'live' || dateRange === '1D') {
         params.limit = 500;
+      } else if (dateRange === '1W') {
+        params.limit = 1000;
       } else {
-        params.limit = 365;
+        params.limit = 2000;
       }
+
       const data = await getPrices(symbol, params);
       setPriceData(data);
     } catch (err) {
@@ -81,7 +145,7 @@ export default function InstrumentChart({ symbol, marketClosed = false }: Instru
     } finally {
       setIsLoading(false);
     }
-  }, [symbol, interval]);
+  }, [symbol, dateRange, barInterval]);
 
   useEffect(() => {
     fetchPrices();
@@ -103,6 +167,8 @@ export default function InstrumentChart({ symbol, marketClosed = false }: Instru
     indicatorSeriesRef.current.clear();
     rsiSeriesRef.current = null;
 
+    const showTimeAxis = barInterval !== '1d' && barInterval !== '1w' && barInterval !== '1m';
+
     const chart = createChart(containerRef.current, {
       width: containerRef.current.clientWidth,
       height: 400,
@@ -123,7 +189,7 @@ export default function InstrumentChart({ symbol, marketClosed = false }: Instru
       },
       timeScale: {
         borderColor: '#1f2937',
-        timeVisible: interval !== '1d',
+        timeVisible: showTimeAxis,
         secondsVisible: false,
       },
     });
@@ -139,8 +205,23 @@ export default function InstrumentChart({ symbol, marketClosed = false }: Instru
     const downsampled =
       closePoints.length > 1000 ? lttbDownsample(closePoints, 1000) : closePoints;
 
-    if (interval === '1d') {
-      // Candlestick for daily
+    // Use area chart for live mode, candlestick for everything else
+    if (dateRange === 'live') {
+      const areaData: AreaData[] = downsampled.map((pt) => ({
+        time: pt.ts as Time,
+        value: pt.value,
+      }));
+
+      const series = chart.addAreaSeries({
+        lineColor: '#3b82f6',
+        topColor: 'rgba(59, 130, 246, 0.2)',
+        bottomColor: 'transparent',
+        lineWidth: 2,
+      });
+      series.setData(areaData);
+      mainSeriesRef.current = series;
+    } else {
+      // Candlestick for all OHLC intervals
       const candleData: CandlestickData[] = priceData.map((bar) => ({
         time: (new Date(bar.ts).getTime() / 1000) as Time,
         open: bar.open,
@@ -159,26 +240,10 @@ export default function InstrumentChart({ symbol, marketClosed = false }: Instru
       });
       series.setData(candleData);
       mainSeriesRef.current = series;
-    } else {
-      // Area chart for intraday
-      const areaData: AreaData[] = downsampled.map((pt) => ({
-        time: pt.ts as Time,
-        value: pt.value,
-      }));
-
-      const series = chart.addAreaSeries({
-        lineColor: '#3b82f6',
-        topColor: 'rgba(59, 130, 246, 0.2)',
-        bottomColor: 'transparent',
-        lineWidth: 2,
-      });
-      series.setData(areaData);
-      mainSeriesRef.current = series;
     }
 
     // Render indicator overlays
     const renderIndicators = () => {
-      // Remove old indicator series
       indicatorSeriesRef.current.forEach((series) => {
         try { chart.removeSeries(series); } catch { /* already removed */ }
       });
@@ -248,7 +313,7 @@ export default function InstrumentChart({ symbol, marketClosed = false }: Instru
         },
         timeScale: {
           borderColor: '#1f2937',
-          timeVisible: interval !== '1d',
+          timeVisible: showTimeAxis,
           visible: false,
         },
         crosshair: {
@@ -326,11 +391,11 @@ export default function InstrumentChart({ symbol, marketClosed = false }: Instru
         rsiChartRef.current = null;
       }
     };
-  }, [priceData, interval, indicators]);
+  }, [priceData, barInterval, dateRange, indicators]);
 
-  // SSE live updates
+  // SSE live updates (only in live mode)
   useEffect(() => {
-    if (marketClosed) return;
+    if (marketClosed || dateRange !== 'live') return;
 
     const es = createEventSource(`/api/stream/instruments/${encodeURIComponent(symbol)}`);
 
@@ -340,21 +405,10 @@ export default function InstrumentChart({ symbol, marketClosed = false }: Instru
         const time = (new Date(data.ts).getTime() / 1000) as Time;
 
         if (mainSeriesRef.current) {
-          if (interval === '1d') {
-            // Update the last candlestick
-            (mainSeriesRef.current as ISeriesApi<'Candlestick'>).update({
-              time,
-              open: data.last_price,
-              high: data.last_price,
-              low: data.last_price,
-              close: data.last_price,
-            });
-          } else {
-            (mainSeriesRef.current as ISeriesApi<'Area'>).update({
-              time,
-              value: data.last_price,
-            });
-          }
+          (mainSeriesRef.current as ISeriesApi<'Area'>).update({
+            time,
+            value: data.last_price,
+          });
         }
       } catch {
         // ignore parse errors
@@ -367,13 +421,20 @@ export default function InstrumentChart({ symbol, marketClosed = false }: Instru
       es.close();
       eventSourceRef.current = null;
     };
-  }, [symbol, interval, marketClosed]);
+  }, [symbol, dateRange, marketClosed]);
 
-  const intervals: { key: Interval; label: string }[] = [
-    { key: '1min', label: '1m' },
-    { key: '1h', label: '1H' },
-    { key: '1d', label: '1D' },
+  const dateRanges: { key: DateRange; label: string }[] = [
+    { key: 'live', label: 'Live' },
+    { key: '1D', label: '1D' },
+    { key: '1W', label: '1W' },
+    { key: '1M', label: '1M' },
+    { key: '3M', label: '3M' },
+    { key: '6M', label: '6M' },
+    { key: '1Y', label: '1Y' },
+    { key: '2Y', label: '2Y' },
   ];
+
+  const validIntervals = VALID_INTERVALS[dateRange];
 
   const indicatorButtons: { key: Indicator; label: string }[] = [
     { key: 'sma', label: 'SMA(20)' },
@@ -386,21 +447,42 @@ export default function InstrumentChart({ symbol, marketClosed = false }: Instru
     <div className="space-y-3">
       {/* Controls */}
       <div className="flex items-center justify-between flex-wrap gap-2">
-        {/* Interval selector */}
-        <div className="flex items-center gap-1 bg-terminal-bg rounded p-1">
-          {intervals.map((int) => (
-            <button
-              key={int.key}
-              onClick={() => setInterval(int.key)}
-              className={`px-3 py-1 text-xs rounded transition-colors ${
-                interval === int.key
-                  ? 'bg-terminal-accent text-white'
-                  : 'text-terminal-muted hover:text-terminal-text'
-              }`}
-            >
-              {int.label}
-            </button>
-          ))}
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Date range selector */}
+          <div className="flex items-center gap-1 bg-terminal-bg rounded p-1">
+            {dateRanges.map((dr) => (
+              <button
+                key={dr.key}
+                onClick={() => handleDateRangeChange(dr.key)}
+                className={`px-3 py-1 text-xs rounded transition-colors ${
+                  dateRange === dr.key
+                    ? 'bg-terminal-accent text-white'
+                    : 'text-terminal-muted hover:text-terminal-text'
+                }`}
+              >
+                {dr.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Bar interval selector */}
+          {validIntervals.length > 1 && (
+            <div className="flex items-center gap-1 bg-terminal-bg rounded p-1">
+              {validIntervals.map((int) => (
+                <button
+                  key={int}
+                  onClick={() => setBarInterval(int)}
+                  className={`px-2 py-1 text-xs rounded transition-colors ${
+                    barInterval === int
+                      ? 'bg-terminal-panel text-terminal-text border border-terminal-border'
+                      : 'text-terminal-muted hover:text-terminal-text'
+                  }`}
+                >
+                  {INTERVAL_LABELS[int]}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Indicator toggles */}

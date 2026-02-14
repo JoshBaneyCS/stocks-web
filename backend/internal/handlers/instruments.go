@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"math"
@@ -387,7 +388,7 @@ func (h *InstrumentsHandler) Fundamentals(w http.ResponseWriter, r *http.Request
 }
 
 // Prices returns historical price bars for an instrument.
-// Query params: interval (1d|1h|1min), from, to, limit
+// Query params: interval (1min|5min|15min|1h|1d|1w|1m), from, to, limit
 func (h *InstrumentsHandler) Prices(w http.ResponseWriter, r *http.Request) {
 	symbol := strings.ToUpper(chi.URLParam(r, "symbol"))
 	if symbol == "" {
@@ -399,8 +400,12 @@ func (h *InstrumentsHandler) Prices(w http.ResponseWriter, r *http.Request) {
 	if interval == "" {
 		interval = "1d"
 	}
-	if interval != "1d" && interval != "1h" && interval != "1min" {
-		writeError(w, http.StatusBadRequest, "interval must be 1d, 1h, or 1min")
+	validIntervals := map[string]bool{
+		"1min": true, "5min": true, "15min": true,
+		"1h": true, "1d": true, "1w": true, "1m": true,
+	}
+	if !validIntervals[interval] {
+		writeError(w, http.StatusBadRequest, "interval must be one of: 1min, 5min, 15min, 1h, 1d, 1w, 1m")
 		return
 	}
 
@@ -442,6 +447,35 @@ func (h *InstrumentsHandler) Prices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var bars []models.PriceBar
+	switch interval {
+	case "1min":
+		bars, err = h.queryPriceBars(ctx, instrumentID, "1min", fromTime, toTime, limit)
+	case "5min":
+		bars, err = h.queryCagg(ctx, instrumentID, "ingest.cagg_price_bars_5min", fromTime, toTime, limit)
+	case "15min":
+		bars, err = h.queryCagg(ctx, instrumentID, "ingest.cagg_price_bars_15min", fromTime, toTime, limit)
+	case "1h":
+		bars, err = h.queryCagg(ctx, instrumentID, "ingest.cagg_price_bars_1h", fromTime, toTime, limit)
+	case "1d":
+		bars, err = h.queryCagg(ctx, instrumentID, "ingest.cagg_price_bars_1d", fromTime, toTime, limit)
+	case "1w":
+		bars, err = h.queryAggregated(ctx, instrumentID, "1 week", fromTime, toTime, limit)
+	case "1m":
+		bars, err = h.queryAggregated(ctx, instrumentID, "1 month", fromTime, toTime, limit)
+	}
+
+	if err != nil {
+		slog.Error("failed to query price bars", "error", err, "interval", interval)
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, bars)
+}
+
+// queryPriceBars queries the raw price_bars table for a given interval.
+func (h *InstrumentsHandler) queryPriceBars(ctx context.Context, instrumentID int64, interval string, from, to *time.Time, limit int) ([]models.PriceBar, error) {
 	rows, err := h.MarketDB.Query(ctx, `
 		SELECT ts, open, high, low, close, volume
 		FROM ingest.price_bars
@@ -450,14 +484,60 @@ func (h *InstrumentsHandler) Prices(w http.ResponseWriter, r *http.Request) {
 		AND ($4::timestamptz IS NULL OR ts <= $4)
 		ORDER BY ts ASC
 		LIMIT $5
-	`, instrumentID, interval, fromTime, toTime, limit)
+	`, instrumentID, interval, from, to, limit)
 	if err != nil {
-		slog.Error("failed to query price bars", "error", err)
-		writeError(w, http.StatusInternalServerError, "internal server error")
-		return
+		return nil, err
 	}
 	defer rows.Close()
+	return scanPriceBars(rows)
+}
 
+// queryCagg queries a continuous aggregate view.
+func (h *InstrumentsHandler) queryCagg(ctx context.Context, instrumentID int64, viewName string, from, to *time.Time, limit int) ([]models.PriceBar, error) {
+	query := fmt.Sprintf(`
+		SELECT bucket, open, high, low, close, volume
+		FROM %s
+		WHERE instrument_id = $1
+		AND ($2::timestamptz IS NULL OR bucket >= $2)
+		AND ($3::timestamptz IS NULL OR bucket <= $3)
+		ORDER BY bucket ASC
+		LIMIT $4
+	`, viewName)
+	rows, err := h.MarketDB.Query(ctx, query, instrumentID, from, to, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanPriceBars(rows)
+}
+
+// queryAggregated performs on-the-fly aggregation from daily continuous aggregate data.
+func (h *InstrumentsHandler) queryAggregated(ctx context.Context, instrumentID int64, bucketSize string, from, to *time.Time, limit int) ([]models.PriceBar, error) {
+	query := fmt.Sprintf(`
+		SELECT time_bucket('%s', bucket) AS period,
+		       first(open, bucket) AS open,
+		       max(high) AS high,
+		       min(low) AS low,
+		       last(close, bucket) AS close,
+		       sum(volume) AS volume
+		FROM ingest.cagg_price_bars_1d
+		WHERE instrument_id = $1
+		AND ($2::timestamptz IS NULL OR bucket >= $2)
+		AND ($3::timestamptz IS NULL OR bucket <= $3)
+		GROUP BY period
+		ORDER BY period ASC
+		LIMIT $4
+	`, bucketSize)
+	rows, err := h.MarketDB.Query(ctx, query, instrumentID, from, to, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanPriceBars(rows)
+}
+
+// scanPriceBars scans rows into a slice of PriceBar.
+func scanPriceBars(rows pgx.Rows) ([]models.PriceBar, error) {
 	bars := make([]models.PriceBar, 0)
 	for rows.Next() {
 		var bar models.PriceBar
@@ -465,19 +545,110 @@ func (h *InstrumentsHandler) Prices(w http.ResponseWriter, r *http.Request) {
 			&bar.Timestamp, &bar.Open, &bar.High, &bar.Low, &bar.Close,
 			&bar.Volume,
 		); err != nil {
-			slog.Error("failed to scan price bar", "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
-			return
+			return nil, err
 		}
 		bars = append(bars, bar)
 	}
 	if err := rows.Err(); err != nil {
-		slog.Error("row iteration error", "error", err)
+		return nil, err
+	}
+	return bars, nil
+}
+
+// FilterOptions holds the distinct filter values available for instrument queries.
+type FilterOptions struct {
+	Exchanges    []string `json:"exchanges"`
+	AssetClasses []string `json:"asset_classes"`
+	Countries    []string `json:"countries"`
+}
+
+// Filters returns distinct filter values from the database.
+func (h *InstrumentsHandler) Filters(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	var opts FilterOptions
+
+	// Exchanges with active instruments
+	exRows, err := h.MarketDB.Query(ctx, `
+		SELECT DISTINCT ex.name
+		FROM ingest.exchanges ex
+		INNER JOIN ingest.instruments i ON i.exchange_id = ex.id
+		WHERE i.is_active = true AND ex.name IS NOT NULL
+		ORDER BY ex.name
+	`)
+	if err != nil {
+		slog.Error("failed to query exchanges", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
+	defer exRows.Close()
+	for exRows.Next() {
+		var name string
+		if err := exRows.Scan(&name); err != nil {
+			slog.Error("failed to scan exchange", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+			return
+		}
+		opts.Exchanges = append(opts.Exchanges, name)
+	}
 
-	writeJSON(w, http.StatusOK, bars)
+	// Asset classes with active instruments
+	acRows, err := h.MarketDB.Query(ctx, `
+		SELECT DISTINCT ac.name
+		FROM ingest.asset_classes ac
+		INNER JOIN ingest.instruments i ON i.asset_class_id = ac.id
+		WHERE i.is_active = true AND ac.name IS NOT NULL
+		ORDER BY ac.name
+	`)
+	if err != nil {
+		slog.Error("failed to query asset classes", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	defer acRows.Close()
+	for acRows.Next() {
+		var name string
+		if err := acRows.Scan(&name); err != nil {
+			slog.Error("failed to scan asset class", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+			return
+		}
+		opts.AssetClasses = append(opts.AssetClasses, name)
+	}
+
+	// Countries with active instruments
+	cRows, err := h.MarketDB.Query(ctx, `
+		SELECT DISTINCT country
+		FROM ingest.instruments
+		WHERE is_active = true AND country IS NOT NULL
+		ORDER BY country
+	`)
+	if err != nil {
+		slog.Error("failed to query countries", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	defer cRows.Close()
+	for cRows.Next() {
+		var name string
+		if err := cRows.Scan(&name); err != nil {
+			slog.Error("failed to scan country", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+			return
+		}
+		opts.Countries = append(opts.Countries, name)
+	}
+
+	if opts.Exchanges == nil {
+		opts.Exchanges = []string{}
+	}
+	if opts.AssetClasses == nil {
+		opts.AssetClasses = []string{}
+	}
+	if opts.Countries == nil {
+		opts.Countries = []string{}
+	}
+
+	writeJSON(w, http.StatusOK, opts)
 }
 
 // intQueryParam extracts an integer query parameter with a default value.

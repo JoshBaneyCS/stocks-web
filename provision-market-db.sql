@@ -217,6 +217,64 @@ END $$;
 -- 6. Continuous Aggregates
 -- ---------------------------------------------------------------------------
 
+-- 5-minute continuous aggregate
+CREATE MATERIALIZED VIEW IF NOT EXISTS ingest.cagg_price_bars_5min
+WITH (timescaledb.continuous) AS
+SELECT
+    instrument_id,
+    time_bucket('5 minutes', ts) AS bucket,
+    session,
+    first(open, ts)  AS open,
+    max(high)        AS high,
+    min(low)         AS low,
+    last(close, ts)  AS close,
+    sum(volume)      AS volume,
+    CASE WHEN sum(volume) > 0
+         THEN sum(vwap * volume) / sum(volume)
+    END AS vwap,
+    sum(trades)      AS trades
+FROM ingest.price_bars
+WHERE interval = '1min'
+GROUP BY instrument_id, bucket, session
+WITH NO DATA;
+
+DO $$ BEGIN
+    PERFORM add_continuous_aggregate_policy('ingest.cagg_price_bars_5min',
+        start_offset    => INTERVAL '2 days',
+        end_offset      => INTERVAL '5 minutes',
+        schedule_interval => INTERVAL '5 minutes',
+        if_not_exists   => TRUE);
+END $$;
+
+-- 15-minute continuous aggregate
+CREATE MATERIALIZED VIEW IF NOT EXISTS ingest.cagg_price_bars_15min
+WITH (timescaledb.continuous) AS
+SELECT
+    instrument_id,
+    time_bucket('15 minutes', ts) AS bucket,
+    session,
+    first(open, ts)  AS open,
+    max(high)        AS high,
+    min(low)         AS low,
+    last(close, ts)  AS close,
+    sum(volume)      AS volume,
+    CASE WHEN sum(volume) > 0
+         THEN sum(vwap * volume) / sum(volume)
+    END AS vwap,
+    sum(trades)      AS trades
+FROM ingest.price_bars
+WHERE interval = '1min'
+GROUP BY instrument_id, bucket, session
+WITH NO DATA;
+
+DO $$ BEGIN
+    PERFORM add_continuous_aggregate_policy('ingest.cagg_price_bars_15min',
+        start_offset    => INTERVAL '2 days',
+        end_offset      => INTERVAL '15 minutes',
+        schedule_interval => INTERVAL '15 minutes',
+        if_not_exists   => TRUE);
+END $$;
+
 CREATE MATERIALIZED VIEW IF NOT EXISTS ingest.cagg_price_bars_1h
 WITH (timescaledb.continuous) AS
 SELECT

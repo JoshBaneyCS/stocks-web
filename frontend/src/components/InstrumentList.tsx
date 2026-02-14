@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import { FixedSizeList as VirtualList } from 'react-window';
-import { getInstruments, type InstrumentSearchParams } from '../lib/api';
+import { getInstruments, getFilters, type InstrumentSearchParams, type FilterOptions } from '../lib/api';
 import { useFavoritesStore } from '../lib/store';
 import type { InstrumentListItem, PaginatedResponse } from '../lib/types';
 import { formatPrice, formatLargeNumber, debounce } from './utils';
@@ -19,6 +19,11 @@ export default function InstrumentList() {
   const [exchange, setExchange] = useState('');
   const [country, setCountry] = useState('');
   const [page, setPage] = useState(1);
+  const [filterOptions, setFilterOptions] = useState<FilterOptions | null>(null);
+
+  useEffect(() => {
+    getFilters().then(setFilterOptions).catch(console.error);
+  }, []);
 
   // Favorites
   const { pendingIds, hasChanges, toggleFavorite, saveFavorites, loadFavorites, isSaving } =
@@ -186,11 +191,11 @@ export default function InstrumentList() {
           className="terminal-input text-sm"
         >
           <option value="">All Asset Classes</option>
-          <option value="equity">Equity</option>
-          <option value="etf">ETF</option>
-          <option value="crypto">Crypto</option>
-          <option value="forex">Forex</option>
-          <option value="index">Index</option>
+          {filterOptions?.asset_classes.map((ac) => (
+            <option key={ac} value={ac}>
+              {ac.charAt(0).toUpperCase() + ac.slice(1)}
+            </option>
+          ))}
         </select>
 
         <select
@@ -202,9 +207,9 @@ export default function InstrumentList() {
           className="terminal-input text-sm"
         >
           <option value="">All Exchanges</option>
-          <option value="NYSE">NYSE</option>
-          <option value="NASDAQ">NASDAQ</option>
-          <option value="AMEX">AMEX</option>
+          {filterOptions?.exchanges.map((ex) => (
+            <option key={ex} value={ex}>{ex}</option>
+          ))}
         </select>
 
         <select
@@ -216,9 +221,9 @@ export default function InstrumentList() {
           className="terminal-input text-sm"
         >
           <option value="">All Countries</option>
-          <option value="US">US</option>
-          <option value="GB">GB</option>
-          <option value="CA">CA</option>
+          {filterOptions?.countries.map((c) => (
+            <option key={c} value={c}>{c}</option>
+          ))}
         </select>
       </div>
 

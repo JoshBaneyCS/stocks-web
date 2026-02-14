@@ -76,6 +76,26 @@ CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user    ON auth.refresh_tokens(use
 CREATE INDEX IF NOT EXISTS idx_refresh_tokens_hash    ON auth.refresh_tokens(token_hash);
 CREATE INDEX IF NOT EXISTS idx_refresh_tokens_expires ON auth.refresh_tokens(expires_at);
 
+-- 5. api_keys — API keys for programmatic access
+CREATE TABLE IF NOT EXISTS auth.api_keys (
+    id            SERIAL      PRIMARY KEY,
+    user_id       UUID        NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    key_prefix    TEXT        NOT NULL,
+    key_hash      TEXT        NOT NULL UNIQUE,
+    name          TEXT        NOT NULL,
+    permissions   TEXT[]      NOT NULL DEFAULT ARRAY['read'],
+    rate_limit    INTEGER     NOT NULL DEFAULT 60,
+    is_active     BOOLEAN     NOT NULL DEFAULT TRUE,
+    last_used_at  TIMESTAMPTZ,
+    expires_at    TIMESTAMPTZ,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_api_keys_user   ON auth.api_keys(user_id);
+CREATE INDEX IF NOT EXISTS idx_api_keys_hash   ON auth.api_keys(key_hash);
+CREATE INDEX IF NOT EXISTS idx_api_keys_active ON auth.api_keys(is_active) WHERE is_active = true;
+
 -- ===========================================================================
 -- Seed Data
 -- ===========================================================================
