@@ -38,6 +38,11 @@ spec:
                 secretKeyRef:
                   name: stocks-web-secrets
                   key: DATABASE_URL
+            - name: MARKET_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: stocks-web-secrets
+                  key: MARKET_DATABASE_URL
             - name: JWT_SECRET
               valueFrom:
                 secretKeyRef:

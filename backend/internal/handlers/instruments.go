@@ -19,12 +19,13 @@ import (
 
 // InstrumentsHandler handles instrument-related HTTP endpoints.
 type InstrumentsHandler struct {
-	DB *pgxpool.Pool
+	AuthDB   *pgxpool.Pool
+	MarketDB *pgxpool.Pool
 }
 
 // NewInstrumentsHandler creates a new InstrumentsHandler.
-func NewInstrumentsHandler(db *pgxpool.Pool) *InstrumentsHandler {
-	return &InstrumentsHandler{DB: db}
+func NewInstrumentsHandler(authDB, marketDB *pgxpool.Pool) *InstrumentsHandler {
+	return &InstrumentsHandler{AuthDB: authDB, MarketDB: marketDB}
 }
 
 // List returns a paginated list of instruments with optional filters.
@@ -64,12 +65,12 @@ func (h *InstrumentsHandler) List(w http.ResponseWriter, r *http.Request) {
 		argIdx++
 	}
 	if assetClass != "" {
-		conditions = append(conditions, fmt.Sprintf("i.asset_class = $%d", argIdx))
+		conditions = append(conditions, fmt.Sprintf("ac.name = $%d", argIdx))
 		args = append(args, assetClass)
 		argIdx++
 	}
 	if exchange != "" {
-		conditions = append(conditions, fmt.Sprintf("i.exchange = $%d", argIdx))
+		conditions = append(conditions, fmt.Sprintf("ex.name = $%d", argIdx))
 		args = append(args, exchange)
 		argIdx++
 	}
@@ -81,41 +82,57 @@ func (h *InstrumentsHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	whereClause := "WHERE " + strings.Join(conditions, " AND ")
 
+	// Pre-fetch favorite IDs from auth DB (cross-DB)
+	var favoriteSet map[int64]bool
+	if userID != "" {
+		favIDs, err := fetchFavoriteIDs(ctx, h.AuthDB, userID)
+		if err != nil {
+			slog.Error("failed to fetch favorite IDs", "error", err)
+		} else {
+			favoriteSet = make(map[int64]bool, len(favIDs))
+			for _, id := range favIDs {
+				favoriteSet[id] = true
+			}
+		}
+	}
+
 	// Count query
-	countQuery := fmt.Sprintf(`SELECT COUNT(*) FROM instruments i %s`, whereClause)
+	countQuery := fmt.Sprintf(`
+		SELECT COUNT(*)
+		FROM ingest.instruments i
+		LEFT JOIN ingest.exchanges ex ON ex.id = i.exchange_id
+		LEFT JOIN ingest.asset_classes ac ON ac.id = i.asset_class_id
+		%s`, whereClause)
+
 	var totalCount int
-	if err := h.DB.QueryRow(ctx, countQuery, args...).Scan(&totalCount); err != nil {
+	if err := h.MarketDB.QueryRow(ctx, countQuery, args...).Scan(&totalCount); err != nil {
 		slog.Error("failed to count instruments", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
-	// Build the main query
-	favJoin := ""
-	favSelect := "false AS is_favorite"
-	if userID != "" {
-		favJoin = fmt.Sprintf("LEFT JOIN user_favorites uf ON uf.instrument_id = i.id AND uf.user_id = $%d", argIdx)
-		args = append(args, userID)
-		argIdx++
-		favSelect = "COALESCE(uf.user_id IS NOT NULL, false) AS is_favorite"
-	}
-
+	// Main data query
 	dataQuery := fmt.Sprintf(`
-		SELECT i.id, i.symbol, i.name, i.exchange, i.currency, i.country, i.asset_class, i.is_active,
-		       im.last_price, im.market_cap, cp.sector, cp.industry,
-		       %s
-		FROM instruments i
-		LEFT JOIN instrument_metrics im ON im.instrument_id = i.id
-		LEFT JOIN company_profiles cp ON cp.instrument_id = i.id
-		%s
+		SELECT i.id, i.symbol, i.name,
+		       ex.name, cur.code, i.country,
+		       ac.name, i.is_active,
+		       im.last_price, im.market_cap,
+		       sec.name, ind.name
+		FROM ingest.instruments i
+		LEFT JOIN ingest.exchanges ex ON ex.id = i.exchange_id
+		LEFT JOIN ingest.currencies cur ON cur.id = i.currency_id
+		LEFT JOIN ingest.asset_classes ac ON ac.id = i.asset_class_id
+		LEFT JOIN ingest.sectors sec ON sec.id = i.sector_id
+		LEFT JOIN ingest.industries ind ON ind.id = i.industry_id
+		LEFT JOIN ingest.instrument_metrics im ON im.instrument_id = i.id
 		%s
 		ORDER BY i.symbol ASC
 		LIMIT $%d OFFSET $%d
-	`, favSelect, favJoin, whereClause, argIdx, argIdx+1)
+	`, whereClause, argIdx, argIdx+1)
 
 	args = append(args, pageSize, offset)
 
-	rows, err := h.DB.Query(ctx, dataQuery, args...)
+	rows, err := h.MarketDB.Query(ctx, dataQuery, args...)
 	if err != nil {
 		slog.Error("failed to query instruments", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal server error")
@@ -130,11 +147,13 @@ func (h *InstrumentsHandler) List(w http.ResponseWriter, r *http.Request) {
 			&item.ID, &item.Symbol, &item.Name, &item.Exchange, &item.Currency,
 			&item.Country, &item.AssetClass, &item.IsActive,
 			&item.LastPrice, &item.MarketCap, &item.Sector, &item.Industry,
-			&item.IsFavorite,
 		); err != nil {
 			slog.Error("failed to scan instrument row", "error", err)
 			writeError(w, http.StatusInternalServerError, "internal server error")
 			return
+		}
+		if favoriteSet != nil {
+			item.IsFavorite = favoriteSet[item.ID]
 		}
 		items = append(items, item)
 	}
@@ -172,12 +191,17 @@ func (h *InstrumentsHandler) Detail(w http.ResponseWriter, r *http.Request) {
 	var quote models.Quote
 	var hasProfile, hasQuote bool
 
-	// Fetch instrument + metrics
-	err := h.DB.QueryRow(ctx, `
-		SELECT i.id, i.symbol, i.name, i.exchange, i.currency, i.country, i.asset_class, i.is_active,
+	// Fetch instrument + metrics from market DB
+	err := h.MarketDB.QueryRow(ctx, `
+		SELECT i.id, i.symbol, i.name,
+		       ex.name, cur.code, i.country,
+		       ac.name, i.is_active,
 		       im.last_price, im.market_cap
-		FROM instruments i
-		LEFT JOIN instrument_metrics im ON im.instrument_id = i.id
+		FROM ingest.instruments i
+		LEFT JOIN ingest.exchanges ex ON ex.id = i.exchange_id
+		LEFT JOIN ingest.currencies cur ON cur.id = i.currency_id
+		LEFT JOIN ingest.asset_classes ac ON ac.id = i.asset_class_id
+		LEFT JOIN ingest.instrument_metrics im ON im.instrument_id = i.id
 		WHERE i.symbol = $1
 	`, symbol).Scan(
 		&detail.ID, &detail.Symbol, &detail.Name, &detail.Exchange, &detail.Currency,
@@ -194,11 +218,19 @@ func (h *InstrumentsHandler) Detail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Fetch company profile
-	err = h.DB.QueryRow(ctx, `
-		SELECT market_cap, sector, industry, exchange, country, currency
-		FROM company_profiles
-		WHERE instrument_id = $1
+	// Fetch company profile + sector/industry from instrument FKs
+	err = h.MarketDB.QueryRow(ctx, `
+		SELECT im.market_cap,
+		       sec.name, ind.name,
+		       ex.name, i.country, cur.code
+		FROM ingest.instruments i
+		LEFT JOIN ingest.company_profiles cp ON cp.instrument_id = i.id
+		LEFT JOIN ingest.instrument_metrics im ON im.instrument_id = i.id
+		LEFT JOIN ingest.exchanges ex ON ex.id = i.exchange_id
+		LEFT JOIN ingest.currencies cur ON cur.id = i.currency_id
+		LEFT JOIN ingest.sectors sec ON sec.id = i.sector_id
+		LEFT JOIN ingest.industries ind ON ind.id = i.industry_id
+		WHERE i.id = $1
 	`, detail.ID).Scan(
 		&profile.MarketCap, &profile.Sector, &profile.Industry,
 		&profile.Exchange, &profile.Country, &profile.Currency,
@@ -209,10 +241,10 @@ func (h *InstrumentsHandler) Detail(w http.ResponseWriter, r *http.Request) {
 		slog.Error("failed to query company profile", "error", err)
 	}
 
-	// Fetch latest quote
-	err = h.DB.QueryRow(ctx, `
-		SELECT ts, last_price, bid, ask, volume, source
-		FROM latest_quote_per_instrument
+	// Fetch latest quote from instrument_latest_snapshot
+	err = h.MarketDB.QueryRow(ctx, `
+		SELECT asof_ts, last_price, bid, ask, volume, source
+		FROM ingest.instrument_latest_snapshot
 		WHERE instrument_id = $1
 	`, detail.ID).Scan(
 		&quote.Timestamp, &quote.LastPrice, &quote.Bid, &quote.Ask, &quote.Volume, &quote.Source,
@@ -244,8 +276,8 @@ func (h *InstrumentsHandler) Profile(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	// Look up instrument ID
-	var instrumentID int
-	err := h.DB.QueryRow(ctx, `SELECT id FROM instruments WHERE symbol = $1`, symbol).Scan(&instrumentID)
+	var instrumentID int64
+	err := h.MarketDB.QueryRow(ctx, `SELECT id FROM ingest.instruments WHERE symbol = $1`, symbol).Scan(&instrumentID)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			writeError(w, http.StatusNotFound, "instrument not found")
@@ -257,10 +289,18 @@ func (h *InstrumentsHandler) Profile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var profile models.CompanyProfile
-	err = h.DB.QueryRow(ctx, `
-		SELECT market_cap, sector, industry, exchange, country, currency
-		FROM company_profiles
-		WHERE instrument_id = $1
+	err = h.MarketDB.QueryRow(ctx, `
+		SELECT im.market_cap,
+		       sec.name, ind.name,
+		       ex.name, i.country, cur.code
+		FROM ingest.instruments i
+		LEFT JOIN ingest.company_profiles cp ON cp.instrument_id = i.id
+		LEFT JOIN ingest.instrument_metrics im ON im.instrument_id = i.id
+		LEFT JOIN ingest.exchanges ex ON ex.id = i.exchange_id
+		LEFT JOIN ingest.currencies cur ON cur.id = i.currency_id
+		LEFT JOIN ingest.sectors sec ON sec.id = i.sector_id
+		LEFT JOIN ingest.industries ind ON ind.id = i.industry_id
+		WHERE i.id = $1
 	`, instrumentID).Scan(
 		&profile.MarketCap, &profile.Sector, &profile.Industry,
 		&profile.Exchange, &profile.Country, &profile.Currency,
@@ -294,8 +334,8 @@ func (h *InstrumentsHandler) Fundamentals(w http.ResponseWriter, r *http.Request
 	ctx := r.Context()
 
 	// Look up instrument ID
-	var instrumentID int
-	err := h.DB.QueryRow(ctx, `SELECT id FROM instruments WHERE symbol = $1`, symbol).Scan(&instrumentID)
+	var instrumentID int64
+	err := h.MarketDB.QueryRow(ctx, `SELECT id FROM ingest.instruments WHERE symbol = $1`, symbol).Scan(&instrumentID)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			writeError(w, http.StatusNotFound, "instrument not found")
@@ -306,10 +346,10 @@ func (h *InstrumentsHandler) Fundamentals(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	rows, err := h.DB.Query(ctx, `
+	rows, err := h.MarketDB.Query(ctx, `
 		SELECT period_end_date, calendar_year, period, revenue, gross_profit,
 		       operating_income, net_income, eps
-		FROM financial_income_quarterly
+		FROM ingest.financial_income_quarterly
 		WHERE instrument_id = $1
 		ORDER BY period_end_date DESC
 		LIMIT $2
@@ -390,8 +430,8 @@ func (h *InstrumentsHandler) Prices(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	// Look up instrument ID
-	var instrumentID int
-	err := h.DB.QueryRow(ctx, `SELECT id FROM instruments WHERE symbol = $1`, symbol).Scan(&instrumentID)
+	var instrumentID int64
+	err := h.MarketDB.QueryRow(ctx, `SELECT id FROM ingest.instruments WHERE symbol = $1`, symbol).Scan(&instrumentID)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			writeError(w, http.StatusNotFound, "instrument not found")
@@ -402,9 +442,9 @@ func (h *InstrumentsHandler) Prices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := h.DB.Query(ctx, `
-		SELECT ts, open, high, low, close, volume, adj_close
-		FROM price_bars
+	rows, err := h.MarketDB.Query(ctx, `
+		SELECT ts, open, high, low, close, volume
+		FROM ingest.price_bars
 		WHERE instrument_id = $1 AND interval = $2
 		AND ($3::timestamptz IS NULL OR ts >= $3)
 		AND ($4::timestamptz IS NULL OR ts <= $4)
@@ -423,7 +463,7 @@ func (h *InstrumentsHandler) Prices(w http.ResponseWriter, r *http.Request) {
 		var bar models.PriceBar
 		if err := rows.Scan(
 			&bar.Timestamp, &bar.Open, &bar.High, &bar.Low, &bar.Close,
-			&bar.Volume, &bar.AdjClose,
+			&bar.Volume,
 		); err != nil {
 			slog.Error("failed to scan price bar", "error", err)
 			writeError(w, http.StatusInternalServerError, "internal server error")

@@ -22,17 +22,19 @@ const (
 	pollIntervalMarketOpen   = 5 * time.Second
 	pollIntervalMarketClosed = 30 * time.Second
 	heartbeatInterval        = 30 * time.Second
+	favIDRefreshInterval     = 60 * time.Second
 )
 
 // StreamHandler handles SSE streaming endpoints.
 type StreamHandler struct {
-	DB      *pgxpool.Pool
-	Checker *market.Checker
+	AuthDB   *pgxpool.Pool
+	MarketDB *pgxpool.Pool
+	Checker  *market.Checker
 }
 
 // NewStreamHandler creates a new StreamHandler.
-func NewStreamHandler(db *pgxpool.Pool, checker *market.Checker) *StreamHandler {
-	return &StreamHandler{DB: db, Checker: checker}
+func NewStreamHandler(authDB, marketDB *pgxpool.Pool, checker *market.Checker) *StreamHandler {
+	return &StreamHandler{AuthDB: authDB, MarketDB: marketDB, Checker: checker}
 }
 
 // InstrumentStream is an SSE endpoint that streams price updates for a single instrument.
@@ -46,9 +48,9 @@ func (h *StreamHandler) InstrumentStream(w http.ResponseWriter, r *http.Request)
 
 	ctx := r.Context()
 
-	// Look up instrument
-	var instrumentID int
-	err := h.DB.QueryRow(ctx, `SELECT id FROM instruments WHERE symbol = $1`, symbol).Scan(&instrumentID)
+	// Look up instrument from market DB
+	var instrumentID int64
+	err := h.MarketDB.QueryRow(ctx, `SELECT id FROM ingest.instruments WHERE symbol = $1`, symbol).Scan(&instrumentID)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			writeError(w, http.StatusNotFound, "instrument not found")
@@ -91,12 +93,12 @@ func (h *StreamHandler) InstrumentStream(w http.ResponseWriter, r *http.Request)
 			pollInterval = pollIntervalMarketOpen
 		}
 
-		// Fetch latest quote
+		// Fetch latest quote from market DB
 		var event models.PriceEvent
 		var ts time.Time
-		err := h.DB.QueryRow(ctx, `
-			SELECT last_price, bid, ask, volume, ts
-			FROM latest_quote_per_instrument
+		err := h.MarketDB.QueryRow(ctx, `
+			SELECT last_price, bid, ask, volume, asof_ts
+			FROM ingest.instrument_latest_snapshot
 			WHERE instrument_id = $1
 		`, instrumentID).Scan(&event.LastPrice, &event.Bid, &event.Ask, &event.Volume, &ts)
 
@@ -160,6 +162,10 @@ func (h *StreamHandler) FavoritesStream(w http.ResponseWriter, r *http.Request) 
 
 	lastHeartbeat := time.Now()
 
+	// Pre-fetch favorite IDs from auth DB, cache and refresh periodically
+	favIDs, _ := fetchFavoriteIDs(ctx, h.AuthDB, userID)
+	lastFavRefresh := time.Now()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -172,34 +178,43 @@ func (h *StreamHandler) FavoritesStream(w http.ResponseWriter, r *http.Request) 
 			pollInterval = pollIntervalMarketOpen
 		}
 
-		// Fetch all favorites with latest quotes
-		rows, err := h.DB.Query(ctx, `
-			SELECT i.symbol, lq.last_price, lq.bid, lq.ask, lq.volume, lq.ts
-			FROM user_favorites uf
-			JOIN instruments i ON i.id = uf.instrument_id
-			LEFT JOIN latest_quote_per_instrument lq ON lq.instrument_id = i.id
-			WHERE uf.user_id = $1
-		`, userID)
-		if err != nil {
-			slog.Error("failed to query favorites for stream", "error", err)
-		} else {
-			for rows.Next() {
-				var event models.PriceEvent
-				var ts *time.Time
-				if scanErr := rows.Scan(&event.Symbol, &event.LastPrice, &event.Bid, &event.Ask, &event.Volume, &ts); scanErr != nil {
-					slog.Error("failed to scan favorite stream row", "error", scanErr)
-					continue
-				}
-				if ts != nil {
-					event.Timestamp = ts.Format(time.RFC3339)
-				}
-				data, jsonErr := json.Marshal(event)
-				if jsonErr == nil {
-					fmt.Fprintf(w, "event: price\ndata: %s\n\n", data)
-				}
+		// Refresh favorite IDs periodically
+		if time.Since(lastFavRefresh) >= favIDRefreshInterval {
+			if newIDs, err := fetchFavoriteIDs(ctx, h.AuthDB, userID); err == nil {
+				favIDs = newIDs
 			}
-			rows.Close()
-			flusher.Flush()
+			lastFavRefresh = time.Now()
+		}
+
+		// Fetch latest quotes for favorites from market DB
+		if len(favIDs) > 0 {
+			rows, err := h.MarketDB.Query(ctx, `
+				SELECT i.symbol, ls.last_price, ls.bid, ls.ask, ls.volume, ls.asof_ts
+				FROM ingest.instruments i
+				LEFT JOIN ingest.instrument_latest_snapshot ls ON ls.instrument_id = i.id
+				WHERE i.id = ANY($1)
+			`, favIDs)
+			if err != nil {
+				slog.Error("failed to query favorites for stream", "error", err)
+			} else {
+				for rows.Next() {
+					var event models.PriceEvent
+					var ts *time.Time
+					if scanErr := rows.Scan(&event.Symbol, &event.LastPrice, &event.Bid, &event.Ask, &event.Volume, &ts); scanErr != nil {
+						slog.Error("failed to scan favorite stream row", "error", scanErr)
+						continue
+					}
+					if ts != nil {
+						event.Timestamp = ts.Format(time.RFC3339)
+					}
+					data, jsonErr := json.Marshal(event)
+					if jsonErr == nil {
+						fmt.Fprintf(w, "event: price\ndata: %s\n\n", data)
+					}
+				}
+				rows.Close()
+				flusher.Flush()
+			}
 		}
 
 		// Heartbeat

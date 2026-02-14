@@ -10,6 +10,7 @@ import (
 // Config holds all configuration values for the server.
 type Config struct {
 	DatabaseURL        string
+	MarketDatabaseURL  string
 	Port               string
 	JWTSecret          string
 	RefreshSecret      string
@@ -23,8 +24,9 @@ type Config struct {
 // It panics if any required variable is missing.
 func Load() *Config {
 	cfg := &Config{
-		DatabaseURL:   requireEnv("DATABASE_URL"),
-		JWTSecret:     requireEnv("JWT_SECRET"),
+		DatabaseURL:       requireEnv("DATABASE_URL"),
+		MarketDatabaseURL: requireEnv("MARKET_DATABASE_URL"),
+		JWTSecret:         requireEnv("JWT_SECRET"),
 		RefreshSecret: requireEnv("REFRESH_SECRET"),
 		AdminSecret:   requireEnv("ADMIN_SECRET"),
 		Port:          getEnvOrDefault("PORT", "8080"),

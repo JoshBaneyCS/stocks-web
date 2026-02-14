@@ -13,12 +13,13 @@ import (
 
 // FavoritesHandler handles user favorites endpoints.
 type FavoritesHandler struct {
-	DB *pgxpool.Pool
+	AuthDB   *pgxpool.Pool
+	MarketDB *pgxpool.Pool
 }
 
 // NewFavoritesHandler creates a new FavoritesHandler.
-func NewFavoritesHandler(db *pgxpool.Pool) *FavoritesHandler {
-	return &FavoritesHandler{DB: db}
+func NewFavoritesHandler(authDB, marketDB *pgxpool.Pool) *FavoritesHandler {
+	return &FavoritesHandler{AuthDB: authDB, MarketDB: marketDB}
 }
 
 // Get returns the authenticated user's favorite instruments with latest prices.
@@ -31,40 +32,18 @@ func (h *FavoritesHandler) Get(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	rows, err := h.DB.Query(ctx, `
-		SELECT i.id, i.symbol, i.name, i.exchange, i.currency, i.country, i.asset_class, i.is_active,
-		       im.last_price, im.market_cap, cp.sector, cp.industry
-		FROM user_favorites uf
-		JOIN instruments i ON i.id = uf.instrument_id
-		LEFT JOIN instrument_metrics im ON im.instrument_id = i.id
-		LEFT JOIN company_profiles cp ON cp.instrument_id = i.id
-		WHERE uf.user_id = $1
-		ORDER BY i.symbol ASC
-	`, userID)
+	// Step 1: Get favorite instrument IDs from auth DB
+	favIDs, err := fetchFavoriteIDs(ctx, h.AuthDB, userID)
 	if err != nil {
-		slog.Error("failed to query favorites", "error", err)
+		slog.Error("failed to query favorite IDs", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	defer rows.Close()
 
-	items := make([]models.InstrumentListItem, 0)
-	for rows.Next() {
-		var item models.InstrumentListItem
-		if err := rows.Scan(
-			&item.ID, &item.Symbol, &item.Name, &item.Exchange, &item.Currency,
-			&item.Country, &item.AssetClass, &item.IsActive,
-			&item.LastPrice, &item.MarketCap, &item.Sector, &item.Industry,
-		); err != nil {
-			slog.Error("failed to scan favorite row", "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
-			return
-		}
-		item.IsFavorite = true
-		items = append(items, item)
-	}
-	if err := rows.Err(); err != nil {
-		slog.Error("row iteration error", "error", err)
+	// Step 2: Get instrument details from market DB
+	items, err := fetchInstrumentsByIDs(ctx, h.MarketDB, favIDs)
+	if err != nil {
+		slog.Error("failed to query favorite instruments", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
@@ -90,7 +69,7 @@ func (h *FavoritesHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	tx, err := h.DB.Begin(ctx)
+	tx, err := h.AuthDB.Begin(ctx)
 	if err != nil {
 		slog.Error("failed to begin transaction", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal server error")

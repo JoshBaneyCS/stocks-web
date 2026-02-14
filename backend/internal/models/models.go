@@ -37,7 +37,7 @@ func (u *User) Public() UserPublic {
 // ---- Instruments ----
 
 type Instrument struct {
-	ID         int     `json:"id"`
+	ID         int64   `json:"id"`
 	Symbol     string  `json:"symbol"`
 	Name       *string `json:"name"`
 	Exchange   *string `json:"exchange"`
@@ -136,7 +136,7 @@ type RefreshRequest struct {
 // ---- Favorites ----
 
 type FavoritesUpdateRequest struct {
-	InstrumentIDs []int `json:"instrument_ids"`
+	InstrumentIDs []int64 `json:"instrument_ids"`
 }
 
 // ---- Market Status ----

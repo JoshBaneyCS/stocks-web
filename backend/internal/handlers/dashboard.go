@@ -13,13 +13,14 @@ import (
 
 // DashboardHandler handles the dashboard endpoint.
 type DashboardHandler struct {
-	DB      *pgxpool.Pool
-	Checker *market.Checker
+	AuthDB   *pgxpool.Pool
+	MarketDB *pgxpool.Pool
+	Checker  *market.Checker
 }
 
 // NewDashboardHandler creates a new DashboardHandler.
-func NewDashboardHandler(db *pgxpool.Pool, checker *market.Checker) *DashboardHandler {
-	return &DashboardHandler{DB: db, Checker: checker}
+func NewDashboardHandler(authDB, marketDB *pgxpool.Pool, checker *market.Checker) *DashboardHandler {
+	return &DashboardHandler{AuthDB: authDB, MarketDB: marketDB, Checker: checker}
 }
 
 // Get returns the dashboard data: user favorites with prices + market status.
@@ -32,40 +33,18 @@ func (h *DashboardHandler) Get(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	rows, err := h.DB.Query(ctx, `
-		SELECT i.id, i.symbol, i.name, i.exchange, i.currency, i.country, i.asset_class, i.is_active,
-		       im.last_price, im.market_cap, cp.sector, cp.industry
-		FROM user_favorites uf
-		JOIN instruments i ON i.id = uf.instrument_id
-		LEFT JOIN instrument_metrics im ON im.instrument_id = i.id
-		LEFT JOIN company_profiles cp ON cp.instrument_id = i.id
-		WHERE uf.user_id = $1
-		ORDER BY i.symbol ASC
-	`, userID)
+	// Step 1: Get favorite IDs from auth DB
+	favIDs, err := fetchFavoriteIDs(ctx, h.AuthDB, userID)
 	if err != nil {
-		slog.Error("failed to query dashboard favorites", "error", err)
+		slog.Error("failed to query dashboard favorite IDs", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	defer rows.Close()
 
-	favorites := make([]models.InstrumentListItem, 0)
-	for rows.Next() {
-		var item models.InstrumentListItem
-		if err := rows.Scan(
-			&item.ID, &item.Symbol, &item.Name, &item.Exchange, &item.Currency,
-			&item.Country, &item.AssetClass, &item.IsActive,
-			&item.LastPrice, &item.MarketCap, &item.Sector, &item.Industry,
-		); err != nil {
-			slog.Error("failed to scan dashboard favorite row", "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
-			return
-		}
-		item.IsFavorite = true
-		favorites = append(favorites, item)
-	}
-	if err := rows.Err(); err != nil {
-		slog.Error("row iteration error", "error", err)
+	// Step 2: Get instrument details from market DB
+	favorites, err := fetchInstrumentsByIDs(ctx, h.MarketDB, favIDs)
+	if err != nil {
+		slog.Error("failed to query dashboard instruments", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}

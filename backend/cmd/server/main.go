@@ -36,27 +36,36 @@ func main() {
 	cfg := config.Load()
 	slog.Info("configuration loaded", "port", cfg.Port)
 
-	// Create database connection pool
+	// Create auth database connection pool (stocks-data)
 	ctx := context.Background()
-	pool, err := db.NewPool(ctx, cfg.DatabaseURL)
+	authPool, err := db.NewPool(ctx, cfg.DatabaseURL)
 	if err != nil {
-		slog.Error("failed to create database pool", "error", err)
+		slog.Error("failed to create auth database pool", "error", err)
 		os.Exit(1)
 	}
-	defer pool.Close()
-	slog.Info("database connection pool created")
+	defer authPool.Close()
+	slog.Info("auth database pool established")
+
+	// Create market database connection pool (stocks / ingest schema)
+	marketPool, err := db.NewPool(ctx, cfg.MarketDatabaseURL)
+	if err != nil {
+		slog.Error("failed to create market database pool", "error", err)
+		os.Exit(1)
+	}
+	defer marketPool.Close()
+	slog.Info("market database pool established")
 
 	// Create market status checker
 	checker := market.NewChecker()
 
 	// Create handlers
-	authHandler := auth.NewHandler(pool, cfg)
-	instrumentsHandler := handlers.NewInstrumentsHandler(pool)
-	favoritesHandler := handlers.NewFavoritesHandler(pool)
+	authHandler := auth.NewHandler(authPool, cfg)
+	instrumentsHandler := handlers.NewInstrumentsHandler(authPool, marketPool)
+	favoritesHandler := handlers.NewFavoritesHandler(authPool, marketPool)
 	marketHandler := handlers.NewMarketHandler(checker)
-	dashboardHandler := handlers.NewDashboardHandler(pool, checker)
-	streamHandler := handlers.NewStreamHandler(pool, checker)
-	adminHandler := handlers.NewAdminHandler(pool, cfg.AdminSecret)
+	dashboardHandler := handlers.NewDashboardHandler(authPool, marketPool, checker)
+	streamHandler := handlers.NewStreamHandler(authPool, marketPool, checker)
+	adminHandler := handlers.NewAdminHandler(authPool, cfg.AdminSecret)
 
 	// Set up router
 	r := chi.NewRouter()
@@ -86,9 +95,14 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		pingCtx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 		defer cancel()
-		if err := pool.Ping(pingCtx); err != nil {
+		if err := authPool.Ping(pingCtx); err != nil {
 			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = w.Write([]byte(`{"status":"not ready","error":"database unreachable"}`))
+			_, _ = w.Write([]byte(`{"status":"not ready","error":"auth database unreachable"}`))
+			return
+		}
+		if err := marketPool.Ping(pingCtx); err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"status":"not ready","error":"market database unreachable"}`))
 			return
 		}
 		w.WriteHeader(http.StatusOK)
