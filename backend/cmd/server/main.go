@@ -38,7 +38,7 @@ func main() {
 
 	// Create auth database connection pool (stocks-data)
 	ctx := context.Background()
-	authPool, err := db.NewPool(ctx, cfg.DatabaseURL)
+	authPool, err := db.NewPoolWithSearchPath(ctx, cfg.DatabaseURL, "auth")
 	if err != nil {
 		slog.Error("failed to create auth database pool", "error", err)
 		os.Exit(1)
