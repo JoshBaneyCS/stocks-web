@@ -69,12 +69,14 @@ CREATE TABLE IF NOT EXISTS auth.refresh_tokens (
     user_id    UUID        NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
     token_hash TEXT        UNIQUE NOT NULL,
     expires_at TIMESTAMPTZ NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    rotated_at TIMESTAMPTZ DEFAULT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user    ON auth.refresh_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_refresh_tokens_hash    ON auth.refresh_tokens(token_hash);
 CREATE INDEX IF NOT EXISTS idx_refresh_tokens_expires ON auth.refresh_tokens(expires_at);
+CREATE INDEX IF NOT EXISTS idx_refresh_tokens_rotated ON auth.refresh_tokens(rotated_at) WHERE rotated_at IS NOT NULL;
 
 -- 5. api_keys — API keys for programmatic access
 CREATE TABLE IF NOT EXISTS auth.api_keys (

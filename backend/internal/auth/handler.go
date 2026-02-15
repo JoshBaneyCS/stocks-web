@@ -316,13 +316,17 @@ func (h *Handler) RefreshToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify token exists in DB (not revoked)
+	// Verify token exists in DB (not revoked); accept recently-rotated tokens (30s grace)
 	tokenHash := hashToken(refreshTokenStr)
 	var dbUserID string
+	var rotatedAt *time.Time
 	err = h.DB.QueryRow(ctx,
-		`SELECT user_id FROM refresh_tokens WHERE token_hash = $1 AND expires_at > NOW()`,
+		`SELECT user_id, rotated_at FROM refresh_tokens
+		 WHERE token_hash = $1
+		 AND expires_at > NOW()
+		 AND (rotated_at IS NULL OR rotated_at > NOW() - INTERVAL '30 seconds')`,
 		tokenHash,
-	).Scan(&dbUserID)
+	).Scan(&dbUserID, &rotatedAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "refresh token not found or expired"})
@@ -333,8 +337,12 @@ func (h *Handler) RefreshToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Delete the old refresh token (rotation)
-	_, _ = h.DB.Exec(ctx, `DELETE FROM refresh_tokens WHERE token_hash = $1`, tokenHash)
+	// Soft-rotate: mark as rotated instead of deleting (first request wins)
+	if rotatedAt == nil {
+		_, _ = h.DB.Exec(ctx,
+			`UPDATE refresh_tokens SET rotated_at = NOW() WHERE token_hash = $1 AND rotated_at IS NULL`,
+			tokenHash)
+	}
 
 	// Issue new tokens
 	accessToken, newRefreshToken, err := h.generateTokens(ctx, userID)
@@ -391,9 +399,11 @@ func (h *Handler) generateTokens(ctx context.Context, userID string) (string, st
 		return "", "", fmt.Errorf("storing refresh token: %w", err)
 	}
 
-	// Clean up expired tokens for this user (best effort)
+	// Clean up expired and stale rotated tokens for this user (best effort)
 	_, _ = h.DB.Exec(ctx,
-		`DELETE FROM refresh_tokens WHERE user_id = $1 AND expires_at < NOW()`,
+		`DELETE FROM refresh_tokens
+		 WHERE user_id = $1
+		 AND (expires_at < NOW() OR (rotated_at IS NOT NULL AND rotated_at < NOW() - INTERVAL '30 seconds'))`,
 		userID,
 	)
 
